@@ -1,4 +1,4 @@
-[openmim](examples/Openmim.png)
+![openmim](examples/Openmim.png)
 
 一个可爱好玩的Telegram chatbot
 
