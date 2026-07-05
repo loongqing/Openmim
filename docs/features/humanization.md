@@ -61,7 +61,6 @@ LLM 输出有明显的"AI味"——固定的句式模板、过度的总结性结
 | "至关重要" | 替换为"很重要"、"关键"等 |
 | "不可或缺" | 替换为"少不了"、"必需"等 |
 
-这些规则基于 [Wikipedia "Signs of AI writing"](https://en.wikipedia.org/wiki/AI_writing) 指南设计。
 
 ### 启用/禁用
 

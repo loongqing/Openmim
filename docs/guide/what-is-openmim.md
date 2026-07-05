@@ -2,6 +2,8 @@
 
 Openmim 是一个基于 **python-telegram-bot** 构建的、充满个性的 Telegram 群聊机器人框架。它不是普通的问答机器人，而是一个能够自我进化、主动参与群聊、拥有持久记忆的 AI 聊天伙伴。
 
+![Overview Image](/overview.png)
+
 ## 设计理念
 
 大多数 Telegram AI 机器人存在两个核心问题：
