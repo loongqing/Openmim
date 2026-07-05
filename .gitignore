@@ -23,3 +23,8 @@ backups/
 /data/*.sqlite3-*
 /data/*.json
 /data/*.bak_*
+
+# 文档
+node_modules/
+docs/.vitepress/cache
+docs/.vitepress/dist
