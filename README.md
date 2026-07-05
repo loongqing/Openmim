@@ -2,6 +2,13 @@
 
 一个可爱好玩的Telegram chatbot
 
+## 官方入口
+
+- Telegram 频道：[@mimchanOffical](https://t.me/mimchanOffical)
+- 闭源版机器人：
+  - [@ceciliachanbot](https://t.me/ceciliachanbot)
+  - [@mimchan_bot](https://t.me/mimchan_bot)
+
 功能：
 1. 自动群聊记忆、全局记忆、人格记忆。让机器人学会自我进化！
 2. 见缝插针选择性回复，根据自定义人格让LLM挑选感兴趣的消息回复，主动参与群聊对话，或者被关键词召唤。沉浸感体验远超随机回复方案！
