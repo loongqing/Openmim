@@ -35,4 +35,4 @@ python3 -m pip install -r requirements.txt
 
 ## 文档
 
-施工中……
+[https://loongqing.github.io/Openmim/](https://loongqing.github.io/Openmim/)
