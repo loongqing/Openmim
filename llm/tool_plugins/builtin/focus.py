@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.web_search import (
     SUPPRESS_FOCUS_MODE_TOOL_DEFINITION,
     UPDATE_FOCUS_CRITERIA_TOOL_DEFINITION,

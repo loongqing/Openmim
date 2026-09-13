@@ -12,7 +12,6 @@ class AppContext:
     后续可以逐步扩展 repository / service 实例。
     """
 
-    settings: Any
     runtime_config: RuntimeConfig
     context_mgr: Any
     sticker_mgr: Any

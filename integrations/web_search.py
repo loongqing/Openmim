@@ -8,8 +8,7 @@ from typing import Optional
 
 import httpx
 
-from app.runtime_config import RuntimeConfig
-from app_config.settings import load_settings
+from app.runtime_config import get_shared_runtime_config
 from app_config.config import (
     TAVILY_API_KEY,
     MAX_SEARCH_RESULTS,
@@ -24,7 +23,7 @@ from stores.memory_store import (
 )
 
 logger = logging.getLogger(__name__)
-_RUNTIME_CONFIG = RuntimeConfig(load_settings())
+_RUNTIME_CONFIG = get_shared_runtime_config()
 
 TAVILY_API_URL = "https://api.tavily.com/search"
 _CST = timezone(timedelta(hours=8), name="CST")

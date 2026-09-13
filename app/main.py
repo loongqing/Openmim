@@ -38,7 +38,8 @@ from integrations.scheduler_tool import (
     cancel_all_tasks,
 )
 from stores.group_settings_store import get_group_settings
-from handlers.playables import send_greeting
+from features.playables import send_greeting
+from features.history_guess import stop_prepare_guess_task
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -110,19 +111,25 @@ async def post_init(application):
     try:
         if application.job_queue is not None:
             whitelist_for_jobs = application.bot_data.get("whitelist", set())
+            registered_jobs = []
             if any((get_group_settings(cid).get("morning_greeting_enabled", "true") != "false") for cid in whitelist_for_jobs):
                 application.job_queue.run_daily(
                     morning_greeting_job,
                     time=time(8, 0, tzinfo=timezone(timedelta(hours=8))),
                     name="morning_greeting",
                 )
+                registered_jobs.append("早安(8:00)")
             if any((get_group_settings(cid).get("evening_greeting_enabled", "true") != "false") for cid in whitelist_for_jobs):
                 application.job_queue.run_daily(
                     evening_greeting_job,
                     time=time(23, 0, tzinfo=timezone(timedelta(hours=8))),
                     name="evening_greeting",
                 )
-            logger.info("⏰ 已注册早安(8:00)/晚安(23:00)定时问候（按群开关）")
+                registered_jobs.append("晚安(23:00)")
+            if registered_jobs:
+                logger.info("⏰ 已注册%s定时问候（按群开关）", "/".join(registered_jobs))
+        else:
+            logger.warning("JobQueue 不可用，早晚定时问候未注册")
     except Exception as e:
         logger.warning(f"注册定时问候失败: {e}")
 
@@ -174,6 +181,40 @@ async def post_init(application):
     logger.info("=" * 50)
 
 
+async def post_shutdown(application) -> None:
+    """Close every application-owned resource on the polling event loop."""
+    bot_data = getattr(application, "bot_data", {}) or {}
+    # Stop producers before tearing down the resources they can call into.
+    try:
+        await stop_idle_topic_loop()
+    except Exception:
+        logger.exception("idle topic loop 关闭失败")
+    try:
+        await cancel_all_tasks()
+    except Exception:
+        logger.exception("定时任务关闭失败")
+    try:
+        await stop_prepare_guess_task()
+    except Exception:
+        logger.exception("猜图预热任务关闭失败")
+    plugin_manager = bot_data.get("plugin_manager")
+    if plugin_manager is not None:
+        try:
+            await plugin_manager.shutdown(bot_data.get("app_context"), application)
+        except Exception:
+            logger.exception("插件关闭失败")
+    try:
+        await stop_cleanup_task()
+    except Exception:
+        logger.exception("Sandbox 清理任务关闭失败")
+    try:
+        await close_llm_client()
+    except Exception:
+        logger.exception("LLM client 关闭失败")
+    finally:
+        set_application(None)
+
+
 def main():
     errors = validate_config()
     if errors:
@@ -183,7 +224,7 @@ def main():
             sys.exit(1)
 
     log_config()
-    application, ctx = build_application(post_init)
+    application, ctx = build_application(post_init, post_shutdown)
     logger.info(get_text(
         "messages.launching_log",
         "🚀 Starting Telegram Chat Bot... (concurrent_updates={concurrent_updates}, business={business})",
@@ -205,43 +246,8 @@ def main():
     return application
 
 
-async def _graceful_plugin_shutdown(application) -> None:
-    """Best-effort 优雅关闭插件（Web Panel HTTP server 等）。"""
-    if application is None:
-        return
-    bot_data = getattr(application, "bot_data", {}) or {}
-    plugin_manager = bot_data.get("plugin_manager")
-    app_context = bot_data.get("app_context")
-    if plugin_manager is not None:
-        try:
-            await plugin_manager.shutdown(app_context, application)
-        except Exception:
-            logger.exception("插件关闭失败")
-
-
 if __name__ == "__main__":
-    _main_application = None
     try:
-        _main_application = main()
+        main()
     except KeyboardInterrupt:
         logger.info("👋 Bot 已停止")
-    finally:
-        # 优雅关闭插件（如 Web Panel 的 HTTP server）。
-        try:
-            if _main_application is not None:
-                asyncio.run(_graceful_plugin_shutdown(_main_application))
-        except Exception:
-            pass
-        try:
-            stop_idle_topic_loop()
-        except Exception:
-            pass
-        try:
-            cancel_all_tasks()
-        except Exception:
-            pass
-        try:
-            asyncio.run(stop_cleanup_task())
-        except Exception:
-            pass
-        asyncio.run(close_llm_client())

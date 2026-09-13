@@ -272,5 +272,8 @@ async def process_guest_update(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("Guest 失败兜底编辑也失败")
 
-    asyncio.create_task(_worker())
+    context.application.create_task(
+        _worker(),
+        name=f"guest-reply-{guest_user_id}",
+    )
     return True

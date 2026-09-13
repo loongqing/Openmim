@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import random
-import math
 
 
 def human_reaction_delay(
@@ -103,16 +102,3 @@ def segment_delay(segment_index: int, segment_count: int, segment_text: str) -> 
     jitter = random.uniform(-0.2, 0.3)
 
     return max(0.3, base + jitter)
-
-
-def idle_topic_delay(idle_hours: float) -> float:
-    """
-    长时间没人说话后，Bot 主动开启话题时的"犹豫时间"。
-    沉默越久，犹豫越长（"现在说话会不会奇怪？"）
-    """
-    if idle_hours < 2:
-        return random.uniform(1.0, 3.0)
-    elif idle_hours < 6:
-        return random.uniform(2.0, 5.0)
-    else:
-        return random.uniform(3.0, 8.0)

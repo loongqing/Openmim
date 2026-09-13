@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.web_search import (
     DELETE_GROUP_FACT_TOOL_DEFINITION,
     REMEMBER_GROUP_FACT_TOOL_DEFINITION,

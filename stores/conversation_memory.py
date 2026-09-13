@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -93,12 +94,17 @@ class ConversationMemory:
 
 # ── 全局管理 ──────────────────────────────
 
-_memories: dict[int, ConversationMemory] = {}
+_MAX_CHAT_MEMORIES = 1000
+_memories: OrderedDict[int, ConversationMemory] = OrderedDict()
 
 
 def get_memory(chat_id: int) -> ConversationMemory:
     if chat_id not in _memories:
         _memories[chat_id] = ConversationMemory()
+        if len(_memories) > _MAX_CHAT_MEMORIES:
+            _memories.popitem(last=False)
+    else:
+        _memories.move_to_end(chat_id)
     return _memories[chat_id]
 
 

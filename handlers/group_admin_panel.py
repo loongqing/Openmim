@@ -9,7 +9,7 @@
 """
 import logging
 
-from app_config.customization import get_dict, get_text
+from app_config.customization import get_text
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,8 +17,7 @@ from telegram.ext import (
     ChatMemberHandler, filters,
 )
 from telegram.constants import ParseMode
-from telegram.error import TelegramError, BadRequest
-from telegram.helpers import escape_markdown
+from telegram.error import TelegramError
 
 from app_config.config import (
     ADMIN_IDS,
@@ -29,8 +28,6 @@ from stores.group_settings_store import (
     set_group_setting,
     reset_group_setting,
     reset_group_settings,
-    get_setting_labels,
-    get_setting_descriptions,
     SETTING_IS_SENSITIVE,
     mask_sensitive,
     get_group_attention_mode,
@@ -59,67 +56,21 @@ from stores.business_settings import (
     set_user_setting as set_biz_setting,
     reset_user_setting as reset_biz_setting,
 )
-
-def _admin_examples() -> dict[str, str]:
-    return get_dict("admin_examples", {})
-
-
-def _labels() -> dict[str, str]:
-    return get_setting_labels()
-
-
-def _descriptions() -> dict[str, str]:
-    return get_setting_descriptions()
+from handlers.admin_panel_utils import (
+    admin_examples as _admin_examples,
+    labels as _labels,
+    descriptions as _descriptions,
+    mdv2 as _mdv2,
+    safe_edit as _safe_edit,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-def _mdv2(text: str) -> str:
-    """Convert the panel's small legacy-Markdown subset (**bold**, `code`) to MarkdownV2."""
-    s = str(text or "")
-    out: list[str] = []
-    i = 0
-    while i < len(s):
-        if s.startswith("**", i):
-            j = s.find("**", i + 2)
-            if j != -1:
-                out.append("*" + escape_markdown(s[i + 2:j], version=2) + "*")
-                i = j + 2
-                continue
-        if s[i] == "`":
-            j = s.find("`", i + 1)
-            if j != -1:
-                out.append("`" + escape_markdown(s[i + 1:j], version=2, entity_type="code") + "`")
-                i = j + 1
-                continue
-        out.append(escape_markdown(s[i], version=2))
-        i += 1
-    return "".join(out)
-
-
 def _attention_label(mode: str) -> str:
     # 面板侧统一只展示单消息注意力，避免暴露已下线模式。
     return "单消息注意力"
-
-# ── 安全编辑 ─────────────────────────────────────
-
-async def _safe_edit(query, text=None, reply_markup=None, parse_mode=None):
-    try:
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except BadRequest as e:
-        msg = str(e).lower()
-        if "not modified" in msg:
-            return
-        if parse_mode is not None and "can't parse entities" in msg:
-            try:
-                await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
-                return
-            except TelegramError:
-                pass
-        raise
-    except TelegramError:
-        pass
 
 # ── Callback 前缀 ─────────────────────────────────
 
@@ -165,6 +116,7 @@ _ADMIN_CACHE_TTL = 300
 # ── Business 面板构建 ─────────────────────────
 
 BIZ_LABELS = {
+    "llm_provider": "API 协议",
     "llm_api_key": "API Key",
     "llm_api_base": "API Base",
     "llm_model": "模型",
@@ -182,7 +134,7 @@ BIZ_CATEGORIES = {
     "llm": {
         "title": "🧠 LLM 配置",
         "desc": "配置私聊使用的模型、API Key 和 Base URL。",
-        "keys": ["llm_api_key", "llm_api_base", "llm_model"],
+        "keys": ["llm_provider", "llm_api_key", "llm_api_base", "llm_model"],
     },
     "behavior": {
         "title": "✨ 拟人化增强",
@@ -206,6 +158,8 @@ def _biz_mask_key(value: str) -> str:
 def _biz_key_status(s, key: str) -> str:
     if key == "mode":
         return "🗣️ 已读乱回" if s.is_synonym_mode() else "💬 经典对话"
+    if key == "llm_provider":
+        return "🔵 自定义" if s.llm_provider else "🟢 默认"
     if key == "llm_api_key":
         return "🔵 自定义" if s.llm_api_key else "🟢 默认"
     if key == "llm_api_base":
@@ -267,6 +221,7 @@ def _build_biz_category_text(uid: str, user_name: str, category_id: str) -> str:
         lines.append(f"• **当前模式**：{_biz_key_status(s, 'mode')}")
     elif category_id == "llm":
         lines.extend([
+            f"• **API 协议**：`{s.llm_provider or '使用全局默认'}`",
             f"• **API Key**：`{_biz_mask_key(s.llm_api_key)}`",
             f"• **API Base**：`{s.llm_api_base or '使用全局默认'}`",
             f"• **模型**：`{s.llm_model or '使用全局默认'}`" + (" ⚠️需自定义Key" if not s.has_custom_llm() else ""),
@@ -292,6 +247,7 @@ def _build_biz_category_keyboard(uid: str, category_id: str) -> InlineKeyboardMa
         )])
     elif category_id == "llm":
         kb.extend([
+            [InlineKeyboardButton("🔌 修改协议", callback_data=f"{CB_BIZ_EDIT}:llm_provider")],
             [InlineKeyboardButton("🔑 修改 Key", callback_data=f"{CB_BIZ_EDIT}:llm_api_key")],
             [InlineKeyboardButton("🌐 修改 Base", callback_data=f"{CB_BIZ_EDIT}:llm_api_base")],
             [InlineKeyboardButton("🧠 修改模型", callback_data=f"{CB_BIZ_EDIT}:llm_model")],
@@ -314,6 +270,7 @@ PANEL_KEYS_ROW1 = [
     ("idle_topic_enabled", "🪄 冷群活跃"),
     ("free_reply_mode", "🧵 自由回复"),
     ("reply_preference", "🎯 回复偏好"),
+    ("llm_provider", "🔌 对话协议"),
     ("llm_model", "🤖 对话模型"),
     ("llm_api_key", "🔑 对话Key"),
     ("llm_api_base", "🔗 对话Base"),
@@ -337,7 +294,7 @@ SETTING_CATEGORIES = {
     "chat": {
         "title": "🤖 对话模型",
         "desc": "配置本群聊天使用的模型、API Key 和 Base URL。模型自定义需要先配置对话 Key。",
-        "keys": ["llm_model", "llm_api_key", "llm_api_base"],
+        "keys": ["llm_provider", "llm_model", "llm_api_key", "llm_api_base"],
     },
     "image": {
         "title": "🎨 生图设置",
@@ -1320,6 +1277,7 @@ async def _cb_toggle_setting(query, context, user_id: int, chat_id: str, key: st
             "image_gen_model": "例如：gpt-image-1",
             "tavily_api_key": "请输入 Tavily API Key（tvly-...）",
             "llm_model": "例如：gpt-4o-mini / gpt-4o",
+            "llm_provider": "openai_compatible / openai_responses / anthropic",
             "llm_api_key": "请输入 LLM API Key（sk-...）",
             "llm_api_base": "例如：https://api.openai.com/v1",
             "message_drop_probability": "请输入 0~1 的小数，例如：0、0.2、0.75。0=不丢弃，1=全部普通消息丢弃",
@@ -1389,7 +1347,7 @@ async def _cb_biz_toggle_feature(query, context, user_id: int, key: str):
 async def _cb_biz_edit(query, context, user_id: int, key: str):
     uid = str(user_id)
     s = get_biz_settings(uid)
-    label_map = {"llm_api_key": "API Key", "llm_api_base": "API Base", "llm_model": "模型", "persona": "人设"}
+    label_map = {"llm_provider": "API 协议", "llm_api_key": "API Key", "llm_api_base": "API Base", "llm_model": "模型", "persona": "人设"}
     label = label_map.get(key, key)
     if key == "llm_model" and not s.has_custom_llm():
         await query.answer("🔒 请先设置自定义 API Key 和 Base URL", show_alert=True)
@@ -1398,7 +1356,8 @@ async def _cb_biz_edit(query, context, user_id: int, key: str):
     context.user_data["gadmin_chat_id"] = "biz"
     context.user_data["gadmin_key"] = key
     context.user_data["gadmin_user_id"] = uid
-    examples = {"llm_api_key": "请输入 LLM API Key（sk-...）",
+    examples = {"llm_provider": "openai_compatible / openai_responses / anthropic",
+                "llm_api_key": "请输入 LLM API Key（sk-...）",
                 "llm_api_base": "例如：https://api.openai.com/v1",
                 "llm_model": "例如：gpt-4o-mini / gpt-4o",
                 "persona": get_text("admin_panel.business_persona_example", "直接输入人设文本（最多5000字），回复 `默认` 恢复咪姆酱风格")}
@@ -1412,7 +1371,7 @@ async def _cb_biz_edit(query, context, user_id: int, key: str):
 async def _cb_biz_reset(query, context, user_id: int, key: str):
     uid = str(user_id)
     reset_biz_setting(uid, key)
-    label_map = {"llm_api_key": "API Key", "llm_api_base": "API Base", "llm_model": "模型", "persona": "人设"}
+    label_map = {"llm_provider": "API 协议", "llm_api_key": "API Key", "llm_api_base": "API Base", "llm_model": "模型", "persona": "人设"}
     await query.answer(f"✅ {label_map.get(key, key)} 已恢复为全局默认")
     await _cb_biz_refresh(query, context, user_id)
 
@@ -1482,7 +1441,7 @@ async def _handle_gadmin_pending_input(msg, context: ContextTypes.DEFAULT_TYPE) 
     # ── Business 模式：chat_id == "biz" ──
     if chat_id == "biz":
         uid = user_data.get("gadmin_user_id", str(msg.from_user.id))
-        label_map = {"llm_api_key": "API Key", "llm_api_base": "API Base", "llm_model": "模型", "persona": "人设"}
+        label_map = {"llm_provider": "API 协议", "llm_api_key": "API Key", "llm_api_base": "API Base", "llm_model": "模型", "persona": "人设"}
         label = label_map.get(key, key)
         logger.info(f"✍️ Business 输入到达 | user={uid} | key={key} | text_len={len(text)}")
         if not text or text == "取消":
@@ -1493,6 +1452,9 @@ async def _handle_gadmin_pending_input(msg, context: ContextTypes.DEFAULT_TYPE) 
             reset_biz_setting(uid, key)
             _clear_pending_state()
             await msg.reply_text(f"✅ **{label}** 已恢复为全局默认。", parse_mode=ParseMode.MARKDOWN)
+            return True
+        if key == "llm_provider" and text.strip().lower() not in {"openai_compatible", "openai_responses", "anthropic"}:
+            await msg.reply_text("❌ 协议必须是 openai_compatible、openai_responses 或 anthropic。")
             return True
         if key == "llm_model":
             s = get_biz_settings(uid)
@@ -1516,6 +1478,9 @@ async def _handle_gadmin_pending_input(msg, context: ContextTypes.DEFAULT_TYPE) 
         reset_group_setting(chat_id, key)
         _clear_pending_state()
         await msg.reply_text(f"✅ **{label}** 已恢复为默认接口。", parse_mode=ParseMode.MARKDOWN)
+        return True
+    if key == "llm_provider" and text.strip().lower() not in {"openai_compatible", "openai_responses", "anthropic"}:
+        await msg.reply_text("❌ 协议必须是 openai_compatible、openai_responses 或 anthropic。")
         return True
     dep_key = MODEL_DEPENDS_ON.get(key)
     if dep_key:

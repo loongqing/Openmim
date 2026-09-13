@@ -10,14 +10,11 @@ from sqlalchemy import func, select
 
 from app_config.config import DATA_DIR
 from stores.orm import TokenUsageEvent, orm_session
+from stores.timestamps import utc_now_iso
 
 DB_PATH = os.path.join(DATA_DIR, "token_usage.sqlite3")
 _CST = timezone(timedelta(hours=8))
 _lock = Lock()
-
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _today_cst() -> str:
@@ -82,7 +79,7 @@ def record_usage(model: str, usage: dict[str, Any] | None) -> bool:
                 completion_tokens=normalized["completion_tokens"],
                 total_tokens=normalized["total_tokens"],
                 cached_prompt_tokens=normalized["cached_prompt_tokens"],
-                created_at=_now_utc_iso(),
+                created_at=utc_now_iso(),
             ))
     return True
 

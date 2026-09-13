@@ -5,11 +5,12 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Any
 
 from app_config.customization import get_list, get_text
 from stores.orm import HumanBehaviorStateRow, orm_session
+from stores.timestamps import cst_now
 from app_config.config import DATA_DIR, HUMANIZATION_ENABLED, HUMANIZATION_INTENSITY, HUMANIZATION_STYLE, HUMANIZATION_STATE_DB_FILE
 
 DB_PATH = HUMANIZATION_STATE_DB_FILE if os.path.isabs(HUMANIZATION_STATE_DB_FILE) else os.path.join(DATA_DIR, HUMANIZATION_STATE_DB_FILE)
@@ -21,10 +22,6 @@ NEGATIVE_WORDS = ["难过", "崩溃", "焦虑", "撑不住", "想哭", "好累",
 PRAISE_WORDS = ["可爱", "厉害", "真棒", "谢谢", "喜欢你", "好用", "聪明", "乖"]
 PLAYFUL_WORDS = ["哈哈", "笑死", "hhh", "绷不住", "整活", "乐", "笨蛋", "坏机器人"]
 DIRECT_TASK_WORDS = ["先", "然后", "立刻", "直接", "帮我", "请你", "做", "改", "删", "加", "实现", "提交", "commit"]
-
-
-def _now() -> datetime:
-    return datetime.now(timezone(timedelta(hours=8)))
 
 
 def init_db() -> None:
@@ -58,7 +55,7 @@ def _load_state(chat_id: int) -> BehaviorState:
     with orm_session(DB_PATH) as session:
         row = session.get(HumanBehaviorStateRow, int(chat_id))
         if row is None:
-            ts = _now().isoformat()
+            ts = cst_now().isoformat()
             row = HumanBehaviorStateRow(chat_id=int(chat_id), mood="balanced", energy=1.0, last_interaction_at=ts, recent_phrases_json="[]", recent_actions_json="[]", recent_stickers_json="[]", last_reply_style="", updated_at=ts)
             session.add(row)
             session.flush()
@@ -66,7 +63,7 @@ def _load_state(chat_id: int) -> BehaviorState:
             chat_id=int(row.chat_id),
             mood=row.mood or "balanced",
             energy=float(row.energy or 1.0),
-            last_interaction_at=row.last_interaction_at or _now().isoformat(),
+            last_interaction_at=row.last_interaction_at or cst_now().isoformat(),
             recent_phrases=_loads(row.recent_phrases_json),
             recent_actions=_loads(row.recent_actions_json),
             recent_stickers=_loads(row.recent_stickers_json),
@@ -75,7 +72,7 @@ def _load_state(chat_id: int) -> BehaviorState:
 
 
 def _save_state(st: BehaviorState) -> None:
-    ts = _now().isoformat()
+    ts = cst_now().isoformat()
     with orm_session(DB_PATH) as session:
         row = session.get(HumanBehaviorStateRow, int(st.chat_id))
         if row is None:
@@ -120,7 +117,7 @@ def _extract_persona_style(chat_id: int, persona_users: list[Any] | None) -> str
 def _decay_state(st: BehaviorState) -> None:
     try:
         last = datetime.fromisoformat(st.last_interaction_at)
-        minutes = max(0.0, (_now() - last).total_seconds() / 60)
+        minutes = max(0.0, (cst_now() - last).total_seconds() / 60)
     except Exception:
         minutes = 0.0
     if minutes > 20:
@@ -130,7 +127,7 @@ def _decay_state(st: BehaviorState) -> None:
 
 
 def _decide_mood(st: BehaviorState, text: str) -> str:
-    hour = _now().hour
+    hour = cst_now().hour
     if _contains_any(text, NEGATIVE_WORDS):
         return "comforting"
     if _contains_any(text, PRAISE_WORDS):
@@ -159,7 +156,7 @@ def build_human_behavior_hint(chat_id: int, current_message: str, trigger_type: 
     text = current_message or ""
     mood = _decide_mood(st, text)
     st.mood = mood
-    st.last_interaction_at = _now().isoformat()
+    st.last_interaction_at = cst_now().isoformat()
     _save_state(st)
 
     is_technical = _contains_any(text, TECH_WORDS)
@@ -245,5 +242,5 @@ def record_bot_reply(chat_id: int, segments: list[str], stickers: list[str] | No
     else:
         st.last_reply_style = "medium"
     st.energy = max(0.1, st.energy - min(0.12, len(text) / 2000))
-    st.last_interaction_at = _now().isoformat()
+    st.last_interaction_at = cst_now().isoformat()
     _save_state(st)

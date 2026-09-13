@@ -157,7 +157,6 @@ class ChatOrchestrator:
                                 self.d['mark_replied'](chat_id, msg.message_id, m.message_id)
                         else:
                             m = await _send_with_reply_fallback(None)
-                        self.d['bot_reply_eligibility'][m.message_id] = False
                         sent_msgs.append(m)
                         return m
                     except RetryAfter as e:
@@ -169,7 +168,6 @@ class ChatOrchestrator:
                                 self.d['mark_replied'](chat_id, msg.message_id, m.message_id)
                         else:
                             m = await _send_with_reply_fallback(None)
-                        self.d['bot_reply_eligibility'][m.message_id] = False
                         sent_msgs.append(m)
                         return m
                     except TelegramError as e:
@@ -179,7 +177,6 @@ class ChatOrchestrator:
                 for target_id in targets:
                     try:
                         m = await _send_with_reply_fallback(int(target_id), int(target_id))
-                        self.d['bot_reply_eligibility'][m.message_id] = False
                         sent_msgs.append(m)
                         if m:
                             self.d['mark_replied'](chat_id, int(target_id), m.message_id)
@@ -189,7 +186,6 @@ class ChatOrchestrator:
                         await asyncio.sleep(e.retry_after + 1)
                         try:
                             m = await _send_with_reply_fallback(int(target_id), int(target_id))
-                            self.d['bot_reply_eligibility'][m.message_id] = False
                             sent_msgs.append(m)
                             if m:
                                 self.d['mark_replied'](chat_id, int(target_id), m.message_id)
@@ -209,7 +205,6 @@ class ChatOrchestrator:
                         self.d['mark_replied'](chat_id, msg.message_id, m.message_id)
                 else:
                     m = await _send_with_reply_fallback(None)
-                self.d['bot_reply_eligibility'][m.message_id] = False
             except RetryAfter as e:
                 self.d['logger'].warning(f"Telegram flood control: sleep {e.retry_after}s before send")
                 await asyncio.sleep(e.retry_after + 1)
@@ -219,7 +214,6 @@ class ChatOrchestrator:
                         self.d['mark_replied'](chat_id, msg.message_id, m.message_id)
                 else:
                     m = await _send_with_reply_fallback(None)
-                self.d['bot_reply_eligibility'][m.message_id] = False
             sent_msgs.append(m)
             return m
 
@@ -437,8 +431,8 @@ class ChatOrchestrator:
 
         if is_group or is_private:
             try:
-                self.d['record_message'](msg, bot_username, bot_id)
-                self.d['record_bot_response'](chat_id, bot_username, completed_segments, sticker_emojis)
+                await self.d['record_message'](msg, bot_username, bot_id)
+                await self.d['record_bot_response'](chat_id, bot_username, completed_segments, sticker_emojis)
                 try:
                     self.d['record_bot_reply'](chat_id, completed_segments, sticker_emojis)
                 except Exception as e:
@@ -448,14 +442,14 @@ class ChatOrchestrator:
 
             if self.d['persona_memory_enabled'] and completed_segments and persona_users:
                 try:
-                    task = asyncio.create_task(self.d['update_persona_after_turn'](
+                    task = context.application.create_task(self.d['update_persona_after_turn'](
                         chat_id=chat_id,
                         users=persona_users,
                         context_messages=context_snapshot,
                         current_message=text or ("[贴纸]" if has_sticker else "[图片]"),
                         bot_reply=" ".join(completed_segments)[:1200],
                         allow_memory_write=(not memory_tool_used),
-                    ))
+                    ), name=f"persona-update-{chat_id}")
                     task.add_done_callback(self.d['log_async_task_exception'])
                 except Exception as e:
                     self.d['logger'].warning(f"启动人格记忆更新失败: {e}")
@@ -463,8 +457,10 @@ class ChatOrchestrator:
             context_mgr = self.d['get_context_mgr']()
             if context_mgr is not None:
                 try:
-                    asyncio.create_task(
-                        context_mgr.compact_chat(chat_id, self.d['context_max_text_chars'], self.d['bot_context_max_chars'])
+                    await context_mgr.compact_chat(
+                        chat_id,
+                        self.d['context_max_text_chars'],
+                        self.d['bot_context_max_chars'],
                     )
                 except Exception as e:
                     self.d['logger'].warning(f"压缩上下文失败: {e}")

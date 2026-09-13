@@ -74,8 +74,16 @@ class ChatGatekeeper:
 
     async def detect_bot_loop(self, chat_id: int) -> bool:
         now = time.time()
-        if self._bot_loop_cooldown_until.get(chat_id, 0) > now:
+        cooldown_until = self._bot_loop_cooldown_until.get(chat_id, 0)
+        if cooldown_until > now:
             return True
+        if cooldown_until:
+            self._bot_loop_cooldown_until.pop(chat_id, None)
+        if len(self._bot_loop_cooldown_until) > 1000:
+            for stale_chat, expiry in list(self._bot_loop_cooldown_until.items()):
+                if expiry <= now:
+                    self._bot_loop_cooldown_until.pop(stale_chat, None)
+                    self._bot_loop_last_signature.pop(stale_chat, None)
         context_mgr = self._get_context_mgr()
         if context_mgr is None:
             return False

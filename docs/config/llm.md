@@ -1,40 +1,77 @@
 # LLM 配置
 
-Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同服务商。
+Openmim 支持三种 LLM API 协议：OpenAI 兼容 Chat Completions、OpenAI Responses API 和 Anthropic Messages API。三种协议均支持普通对话、流式文本、图片输入、工具调用和 token 用量记录。
 
 ## 基础配置
 
 ```json
 {
+  "LLM_PROVIDER": "openai_responses",
   "LLM_API_BASE": "https://api.openai.com/v1",
   "LLM_API_KEY": "sk-...",
-  "LLM_MODEL": "gpt-4o-mini",
+  "LLM_MODEL": "gpt-5",
   "LLM_TIMEOUT": 120,
   "LLM_TEMPERATURE": 0.9,
   "LLM_MAX_TOKENS": 1024
 }
 ```
 
-## 支持的服务商
+## API 协议
 
-### OpenAI
+### OpenAI Responses API
+
+Responses API 使用 `/v1/responses`。新接入 OpenAI 时可使用：
 
 ```json
 {
+  "LLM_PROVIDER": "openai_responses",
+  "LLM_API_BASE": "https://api.openai.com/v1",
+  "LLM_API_KEY": "sk-...",
+  "LLM_MODEL": "gpt-5"
+}
+```
+
+实现会发送 `store: false`，并使用 Responses API 原生 function calling 与 SSE 事件。请选择明确支持 Responses API、图片输入和 function calling 的模型。
+
+参考：[OpenAI Responses API 文档](https://developers.openai.com/api/docs/guides/text)。
+
+### Anthropic Messages API
+
+```json
+{
+  "LLM_PROVIDER": "anthropic",
+  "LLM_API_BASE": "https://api.anthropic.com/v1",
+  "LLM_API_KEY": "sk-ant-...",
+  "LLM_MODEL": "claude-sonnet-4-5"
+}
+```
+
+Openmim 会自动使用 `x-api-key` 和 `anthropic-version: 2023-06-01` 请求头，并把 system 消息、图片和工具调用转换为 Anthropic 内容块。模型 ID 请以 Anthropic Console 中实际可用的模型为准。
+
+参考：[Anthropic Messages API 文档](https://platform.claude.com/docs/en/api/messages)。
+
+### OpenAI 兼容 Chat Completions
+
+现有配置保持兼容，省略 `LLM_PROVIDER` 时默认使用该协议：
+
+```json
+{
+  "LLM_PROVIDER": "openai_compatible",
   "LLM_API_BASE": "https://api.openai.com/v1",
   "LLM_API_KEY": "sk-...",
   "LLM_MODEL": "gpt-4o-mini"
 }
 ```
 
-推荐模型：
-- `gpt-4o-mini` — 成本低，速度快，适合日常群聊
-- `gpt-4o` — 能力更强，适合需要复杂推理的场景
+DeepSeek、通义千问兼容模式、Ollama 和其他 `/chat/completions` 服务均使用此值。
+
+## OpenAI 兼容服务示例
 
 ### DeepSeek
 
 ```json
 {
+  "LLM_PROVIDER": "openai_compatible",
   "LLM_API_BASE": "https://api.deepseek.com/v1",
   "LLM_API_KEY": "sk-...",
   "LLM_MODEL": "deepseek-chat"
@@ -45,6 +82,7 @@ Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同�
 
 ```json
 {
+  "LLM_PROVIDER": "openai_compatible",
   "LLM_API_BASE": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "LLM_API_KEY": "sk-...",
   "LLM_MODEL": "qwen-turbo"
@@ -55,6 +93,7 @@ Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同�
 
 ```json
 {
+  "LLM_PROVIDER": "openai_compatible",
   "LLM_API_BASE": "https://your-gemini-proxy.com/v1",
   "LLM_API_KEY": "your-api-key",
   "LLM_MODEL": "gemini-2.0-flash"
@@ -65,6 +104,7 @@ Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同�
 
 ```json
 {
+  "LLM_PROVIDER": "openai_compatible",
   "LLM_API_BASE": "http://localhost:11434/v1",
   "LLM_API_KEY": "ollama",
   "LLM_MODEL": "qwen2.5:14b"
@@ -79,6 +119,7 @@ Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同�
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
+| `LLM_PROVIDER` | `openai_compatible` | API 协议：`openai_compatible` / `openai_responses` / `anthropic` |
 | `LLM_API_BASE` | `https://api.openai.com/v1` | API 端点地址 |
 | `LLM_API_KEY` | （必填）| API 密钥 |
 | `LLM_MODEL` | `gpt-4o-mini` | 模型名称 |
@@ -106,6 +147,7 @@ Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同�
 每个群组可以配置独立的 LLM API，完全覆盖全局配置：
 
 在群管理面板（`/gadmin` → 接口配置）中设置：
+- **对话 API 协议**：自定义 `openai_compatible` / `openai_responses` / `anthropic`
 - **对话模型**：自定义 LLM 模型名
 - **对话 API Key**：独立的 API Key
 - **对话 API Base**：独立的 API 端点
@@ -127,5 +169,5 @@ Openmim 支持所有 OpenAI 兼容的 LLM API。本页介绍如何配置不同�
 ```
 
 ::: info 注意
-并非所有 API 端点都支持流式输出。建议先测试确认服务商支持后再开启。
+OpenAI Responses 与 Anthropic 原生流式事件已经适配。第三方 OpenAI 兼容端点是否支持 `stream_options.include_usage` 取决于服务商；若不支持，请关闭流式输出或使用其兼容配置。
 :::

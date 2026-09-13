@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.web_search import START_TOPIC_TOOL_DEFINITION, STOP_TOPIC_TOOL_DEFINITION, start_topic, stop_topic
 
 

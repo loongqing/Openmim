@@ -8,7 +8,8 @@ from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 
 from app_config.customization import get_text
-from stores.playables_db import DB_PATH, TopicModeRow, _now, orm_session
+from stores.playables_db import DB_PATH, TopicModeRow, orm_session
+from stores.timestamps import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def get_topic_info(chat_id: str) -> tuple[bool, str, str]:
 
 
 def activate_topic(chat_id: str, topic_name: str = "") -> str:
-    started = _now()
+    started = utc_now_iso()
     with orm_session(DB_PATH) as session:
         row = session.get(TopicModeRow, str(chat_id))
         if row is None:

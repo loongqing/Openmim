@@ -18,6 +18,7 @@
 6. 完全的分群组BYOK支持
 7. Web UI和telegram面板支持，方便管理你的机器人。
 8. 独特的微动作、去AI味等等充满心机的设计细节！
+9. 支持 OpenAI 兼容 Chat Completions、OpenAI Responses API 和 Anthropic Messages API。
 
 ## 最小配置
 
@@ -27,11 +28,14 @@
 {
   "BOT_TOKEN": "123456:telegram-bot-token",
   "ADMIN_IDS": [""],
+  "LLM_PROVIDER": "openai_responses",
   "LLM_API_BASE": "https://api.openai.com/v1",
   "LLM_API_KEY": "sk-...",
-  "LLM_MODEL": "gpt-4o-mini"
+  "LLM_MODEL": "gpt-5"
 }
 ```
+
+`LLM_PROVIDER` 可选 `openai_compatible`（默认）、`openai_responses` 或 `anthropic`。完整示例见 [LLM 配置](docs/config/llm.md)。
 
 启动：
 

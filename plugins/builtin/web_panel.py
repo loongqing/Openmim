@@ -56,6 +56,10 @@ class WebPanelPlugin(BotPlugin):
                 await asyncio.wait_for(self._task, timeout=5)
             except asyncio.TimeoutError:
                 self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
             except Exception:
                 logger.exception("Web panel server task did not stop cleanly")
         self._server = None

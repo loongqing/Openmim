@@ -10,9 +10,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
+from collections import OrderedDict
 from typing import Callable
 
 from telegram import Message
@@ -47,7 +47,8 @@ class MessageContextService:
         self._is_reply_to_bot = is_reply_to_bot
         self._is_mention_bot = is_mention_bot
         self._get_photo_file_id = get_photo_file_id
-        self._anon_map: dict[str, dict[str, str]] = {}
+        self._anon_map: OrderedDict[str, dict[str, str]] = OrderedDict()
+        self._max_anon_chats = 500
 
     @staticmethod
     def anonymize_sender(user_id: int | None, real_name: str) -> str:
@@ -63,10 +64,14 @@ class MessageContextService:
         cid = str(chat_id)
         if cid not in self._anon_map:
             self._anon_map[cid] = {}
+        else:
+            self._anon_map.move_to_end(cid)
         self._anon_map[cid][label] = real_name
         if len(self._anon_map[cid]) > 200:
             oldest = next(iter(self._anon_map[cid]))
             del self._anon_map[cid][oldest]
+        if len(self._anon_map) > self._max_anon_chats:
+            self._anon_map.popitem(last=False)
         return label
 
     def is_username_anonymization_enabled(self, chat_id: int | str | None) -> bool:
@@ -85,6 +90,8 @@ class MessageContextService:
         if not text:
             return text
         mapping = self._anon_map.get(str(chat_id), {})
+        if mapping:
+            self._anon_map.move_to_end(str(chat_id))
         for label in sorted(mapping.keys(), key=len, reverse=True):
             if label in text:
                 text = text.replace(label, mapping[label])
@@ -106,7 +113,7 @@ class MessageContextService:
             return ""
         return self.anonymize_sender(user_id, str(user_id))
 
-    def record_message(self, msg: Message, bot_username: str, bot_id: int = 0):
+    async def record_message(self, msg: Message, bot_username: str, bot_id: int = 0):
         context_mgr = self._get_context_mgr()
         if context_mgr is None:
             return
@@ -178,13 +185,13 @@ class MessageContextService:
                 reply_to_message_id=msg.reply_to_message.message_id if msg.reply_to_message else None,
             )
 
-        asyncio.create_task(context_mgr.append(msg.chat_id, cm))
+        await context_mgr.append(msg.chat_id, cm)
         try:
             get_activity_store().touch_user_message(msg.chat_id)
         except Exception as e:
             self._logger.warning(f"更新群组活跃时间失败: {e}")
 
-    def record_bot_response(self, chat_id: int, bot_username: str, segments: list[str], stickers: list[str] | None = None):
+    async def record_bot_response(self, chat_id: int, bot_username: str, segments: list[str], stickers: list[str] | None = None):
         context_mgr = self._get_context_mgr()
         if context_mgr is None:
             return
@@ -204,7 +211,7 @@ class MessageContextService:
             message_type="bot",
             emoji=stickers[0] if stickers else "",
         )
-        asyncio.create_task(context_mgr.append(chat_id, cm))
+        await context_mgr.append(chat_id, cm)
         try:
             get_activity_store().touch_bot_message(chat_id)
         except Exception as e:

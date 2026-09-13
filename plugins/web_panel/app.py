@@ -96,7 +96,11 @@ def create_web_app(*, app_context: Any, access_token: str, services: Any = None)
 
     @app.post("/api/plugins/{name}/toggle", tags=["api"])
     async def plugin_toggle(name: str, _auth: bool = Depends(auth)):
-        return services.toggle_plugin(app_context, name)
+        try:
+            return services.toggle_plugin(app_context, name)
+        except (RuntimeError, ValueError) as exc:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # ── Group settings ───────────────────────────────────────────
     @app.get("/api/group-settings/{chat_id}", tags=["api"])

@@ -16,12 +16,11 @@ from typing import Optional
 
 import httpx
 
-from app.runtime_config import RuntimeConfig
+from app.runtime_config import get_shared_runtime_config
 from app_config.customization import get_text
-from app_config.settings import load_settings
 
 logger = logging.getLogger(__name__)
-_RUNTIME_CONFIG = RuntimeConfig(load_settings())
+_RUNTIME_CONFIG = get_shared_runtime_config()
 
 # ── 默认图片生成 Provider ──
 from app_config.config import (

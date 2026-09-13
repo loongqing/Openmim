@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -210,13 +211,18 @@ class PersonalityState:
 # ── 全局状态管理 ──────────────────────────────
 
 # per-chat personality states
-_states: dict[int, PersonalityState] = {}
+_MAX_PERSONALITY_STATES = 1000
+_states: OrderedDict[int, PersonalityState] = OrderedDict()
 
 
 def get_personality(chat_id: int) -> PersonalityState:
     """获取或创建指定聊天的情绪状态"""
     if chat_id not in _states:
         _states[chat_id] = PersonalityState(chat_id=chat_id)
+        if len(_states) > _MAX_PERSONALITY_STATES:
+            _states.popitem(last=False)
+    else:
+        _states.move_to_end(chat_id)
     return _states[chat_id]
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.scheduler_tool import SCHEDULE_TASK_TOOLS, schedule_task
 
 SCHEDULE_TASK_TOOL_DEFINITION = SCHEDULE_TASK_TOOLS[0]

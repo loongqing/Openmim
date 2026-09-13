@@ -2,7 +2,8 @@
 import logging
 
 from app_config.customization import get_list
-from stores.playables_db import DB_PATH, AffinityRow, _now, orm_session
+from stores.playables_db import DB_PATH, AffinityRow, orm_session
+from stores.timestamps import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _ensure_user_exists(chat_id: str, user_id: str):
     with orm_session(DB_PATH) as session:
         row = session.get(AffinityRow, (str(chat_id), str(user_id)))
         if row is None:
-            now = _now()
+            now = utc_now_iso()
             session.add(AffinityRow(
                 chat_id=str(chat_id),
                 user_id=str(user_id),
@@ -67,7 +68,7 @@ def _ensure_user_exists(chat_id: str, user_id: str):
 
 def modify_affinity(chat_id: str, user_id: str, delta: int, reason: str = ""):
     _ensure_user_exists(chat_id, user_id)
-    now = _now()
+    now = utc_now_iso()
     with orm_session(DB_PATH) as session:
         row = session.get(AffinityRow, (str(chat_id), str(user_id)))
         if row is not None:

@@ -48,6 +48,10 @@ Business 模式内置了一个"咪姆酱"风格的默认人设：
 
 通过 `/settings` 命令进入 Business 设置面板，可以：
 
+### 自定义 LLM 接口
+
+Business 模式可以单独设置 API 协议、API Key、Base URL 和模型。协议支持 `openai_compatible`、`openai_responses` 与 `anthropic`；留空时继承全局 LLM 配置。
+
 ### 修改机器人名字
 
 设置对话时机器人代表的名字（即"你"的名字）。

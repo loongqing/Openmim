@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import logging
-from datetime import datetime, timezone
 
 from app_config.config import DATA_DIR
 from stores.orm import (
@@ -18,13 +17,10 @@ from stores.orm import (
     TopicModeRow,
     orm_session,
 )
+from stores.timestamps import utc_now_iso
 
 logger = logging.getLogger(__name__)
 DB_PATH = os.path.join(DATA_DIR, "playables.sqlite3")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def init_db():
@@ -36,7 +32,7 @@ def init_db():
 
 __all__ = [
     "DB_PATH",
-    "_now",
+    "utc_now_iso",
     "init_db",
     "orm_session",
     "AffinityRow",

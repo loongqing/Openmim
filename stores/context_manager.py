@@ -7,6 +7,7 @@ import json
 import os
 import asyncio
 import logging
+from dataclasses import asdict, dataclass, field
 
 from sqlalchemy import delete, distinct, func, select, update
 
@@ -18,62 +19,36 @@ CONTEXT_STORE_FILE = os.path.join(DATA_DIR, "context_history.sqlite3")
 LEGACY_CONTEXT_STORE_FILE = os.path.join(DATA_DIR, "context_history.json")
 
 
+@dataclass(slots=True)
 class ContextMessage:
     """单条上下文消息"""
 
-    __slots__ = ("sender_name", "text", "message_type", "is_reply_to_bot", "is_mention", "caption", "emoji", "char_count", "image_file_ids", "user_id", "username", "message_id", "reply_to_message_id", "file_id", "file_name")
+    sender_name: str
+    text: str = ""
+    message_type: str = "text"
+    is_reply_to_bot: bool = False
+    is_mention: bool = False
+    caption: str = ""
+    emoji: str = ""
+    image_file_ids: list[str] = field(default_factory=list)
+    user_id: int | None = None
+    username: str = ""
+    message_id: int | None = None
+    reply_to_message_id: int | None = None
+    file_id: str = ""
+    file_name: str = ""
+    char_count: int = field(default=0, init=False)
 
-    def __init__(
-        self,
-        sender_name: str,
-        text: str = "",
-        message_type: str = "text",
-        is_reply_to_bot: bool = False,
-        is_mention: bool = False,
-        caption: str = "",
-        emoji: str = "",
-        image_file_ids: list[str] | None = None,
-        user_id: int | None = None,
-        username: str = "",
-        message_id: int | None = None,
-        reply_to_message_id: int | None = None,
-        file_id: str = "",
-        file_name: str = "",
-    ):
-        self.sender_name = sender_name
-        self.text = text
-        self.message_type = message_type
-        self.is_reply_to_bot = is_reply_to_bot
-        self.is_mention = is_mention
-        self.caption = caption
-        self.emoji = emoji
-        self.image_file_ids = image_file_ids or []
-        self.user_id = user_id
-        self.username = username or ""
-        self.message_id = message_id
-        self.reply_to_message_id = reply_to_message_id
-        self.char_count = len(text or caption or emoji or "")
-        self.file_id = file_id or ""
-        self.file_name = file_name or ""
+    def __post_init__(self):
+        self.image_file_ids = list(self.image_file_ids or [])
+        self.username = self.username or ""
+        self.file_id = self.file_id or ""
+        self.file_name = self.file_name or ""
+        if not self.char_count:
+            self.char_count = len(self.text or self.caption or self.emoji or "")
 
     def to_dict(self) -> dict:
-        return {
-            "sender_name": self.sender_name,
-            "text": self.text,
-            "message_type": self.message_type,
-            "is_reply_to_bot": self.is_reply_to_bot,
-            "is_mention": self.is_mention,
-            "caption": self.caption,
-            "emoji": self.emoji,
-            "char_count": self.char_count,
-            "image_file_ids": self.image_file_ids,
-            "user_id": self.user_id,
-            "username": self.username,
-            "message_id": self.message_id,
-            "reply_to_message_id": self.reply_to_message_id,
-            "file_id": self.file_id,
-            "file_name": self.file_name,
-        }
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ContextMessage":
@@ -215,21 +190,102 @@ class ContextManager:
         tail = max(1, limit - head - 3)
         return text[:head] + "..." + text[-tail:]
 
+    def _append_sync(self, chat_id: int, msg: ContextMessage) -> int:
+        with orm_session(self._store_file) as session:
+            self._insert_message(session, chat_id, msg)
+            self._prune_chat(session, chat_id)
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ContextMessageRow)
+                    .where(ContextMessageRow.chat_id == int(chat_id))
+                )
+                or 0
+            )
+
+    def _get_context_sync(self, chat_id: int) -> list[ContextMessage]:
+        with orm_session(self._store_file) as session:
+            rows = session.scalars(
+                select(ContextMessageRow)
+                .where(ContextMessageRow.chat_id == int(chat_id))
+                .order_by(ContextMessageRow.id.asc())
+            ).all()
+            return [self._row_to_message(row) for row in rows]
+
+    def _get_recent_sync(self, chat_id: int, n: int) -> list[ContextMessage]:
+        with orm_session(self._store_file) as session:
+            rows = session.scalars(
+                select(ContextMessageRow)
+                .where(ContextMessageRow.chat_id == int(chat_id))
+                .order_by(ContextMessageRow.id.desc())
+                .limit(n)
+            ).all()
+            return [self._row_to_message(row) for row in reversed(rows)]
+
+    def _chat_ids_sync(self) -> list[int]:
+        with orm_session(self._store_file) as session:
+            rows = session.scalars(
+                select(distinct(ContextMessageRow.chat_id))
+                .order_by(ContextMessageRow.chat_id.asc())
+            ).all()
+            return [int(row) for row in rows]
+
+    def _clear_sync(self, chat_id: int) -> None:
+        with orm_session(self._store_file) as session:
+            session.execute(
+                delete(ContextMessageRow).where(ContextMessageRow.chat_id == int(chat_id))
+            )
+
+    def _compact_chat_sync(self, chat_id: int, max_user_chars: int, max_bot_chars: int) -> None:
+        with orm_session(self._store_file) as session:
+            rows = session.scalars(
+                select(ContextMessageRow)
+                .where(ContextMessageRow.chat_id == int(chat_id))
+                .order_by(ContextMessageRow.id.asc())
+            ).all()
+            for row in rows:
+                limit = max_bot_chars if row.message_type == 'bot' else max_user_chars
+                new_text = self._trim_text(row.text or '', limit)
+                new_caption = self._trim_text(row.caption or '', limit)
+                new_char_count = len(new_text or new_caption or (row.emoji or ''))
+                if (
+                    new_text != (row.text or '')
+                    or new_caption != (row.caption or '')
+                    or new_char_count != int(row.char_count or 0)
+                ):
+                    session.execute(
+                        update(ContextMessageRow)
+                        .where(ContextMessageRow.id == row.id)
+                        .values(
+                            text=new_text,
+                            caption=new_caption,
+                            char_count=new_char_count,
+                        )
+                    )
+
+    @staticmethod
+    async def _await_thread_completion(callable_, *args):
+        """Do not release serialization locks until a cancelled DB thread has exited."""
+        task = asyncio.create_task(asyncio.to_thread(callable_, *args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                logger.exception("数据库线程在取消收尾阶段失败")
+            raise
+
     async def append(self, chat_id: int, msg: ContextMessage):
         """添加一条消息到指定聊天的上下文"""
         async with self._lock:
-            with orm_session(self._store_file) as session:
-                self._insert_message(session, chat_id, msg)
-                self._prune_chat(session, chat_id)
-                count = int(session.scalar(select(func.count()).select_from(ContextMessageRow).where(ContextMessageRow.chat_id == int(chat_id))) or 0)
+            count = await self._await_thread_completion(self._append_sync, chat_id, msg)
             logger.debug(f"🧠 记录上下文 chat={chat_id} count={count}/{self._max}")
 
     async def get_context(self, chat_id: int) -> list[ContextMessage]:
         """获取指定聊天的完整上下文（快照）"""
         async with self._lock:
-            with orm_session(self._store_file) as session:
-                rows = session.scalars(select(ContextMessageRow).where(ContextMessageRow.chat_id == int(chat_id)).order_by(ContextMessageRow.id.asc())).all()
-        return [self._row_to_message(row) for row in rows]
+            return await self._await_thread_completion(self._get_context_sync, chat_id)
 
     async def get_recent(self, chat_id: int, n: int = 10) -> list[ContextMessage]:
         """获取最近 n 条消息"""
@@ -237,9 +293,7 @@ class ContextManager:
         if n <= 0:
             return []
         async with self._lock:
-            with orm_session(self._store_file) as session:
-                rows = session.scalars(select(ContextMessageRow).where(ContextMessageRow.chat_id == int(chat_id)).order_by(ContextMessageRow.id.desc()).limit(n)).all()
-        return [self._row_to_message(row) for row in reversed(rows)]
+            return await self._await_thread_completion(self._get_recent_sync, chat_id, n)
 
     async def get_since_timestamp(self, chat_id: int, timestamp: str) -> list[ContextMessage]:
         msgs = await self.get_context(chat_id)
@@ -263,28 +317,22 @@ class ContextManager:
 
     async def chat_ids(self) -> list[int]:
         async with self._lock:
-            with orm_session(self._store_file) as session:
-                rows = session.scalars(select(distinct(ContextMessageRow.chat_id)).order_by(ContextMessageRow.chat_id.asc())).all()
-        return [int(row) for row in rows]
+            return await self._await_thread_completion(self._chat_ids_sync)
 
     async def clear(self, chat_id: int):
         """清空指定聊天的上下文"""
         async with self._lock:
-            with orm_session(self._store_file) as session:
-                session.execute(delete(ContextMessageRow).where(ContextMessageRow.chat_id == int(chat_id)))
+            await self._await_thread_completion(self._clear_sync, chat_id)
 
     async def compact_chat(self, chat_id: int, max_user_chars: int, max_bot_chars: int):
         """压缩指定聊天的历史文本，减少常驻内存与磁盘体积。"""
         async with self._lock:
-            with orm_session(self._store_file) as session:
-                rows = session.scalars(select(ContextMessageRow).where(ContextMessageRow.chat_id == int(chat_id)).order_by(ContextMessageRow.id.asc())).all()
-                for row in rows:
-                    limit = max_bot_chars if row.message_type == 'bot' else max_user_chars
-                    new_text = self._trim_text(row.text or '', limit)
-                    new_caption = self._trim_text(row.caption or '', limit)
-                    new_char_count = len(new_text or new_caption or (row.emoji or ''))
-                    if new_text != (row.text or '') or new_caption != (row.caption or '') or new_char_count != int(row.char_count or 0):
-                        session.execute(update(ContextMessageRow).where(ContextMessageRow.id == row.id).values(text=new_text, caption=new_caption, char_count=new_char_count))
+            await self._await_thread_completion(
+                self._compact_chat_sync,
+                chat_id,
+                max_user_chars,
+                max_bot_chars,
+            )
 
     @property
     def active_chats(self) -> int:

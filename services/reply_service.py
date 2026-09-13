@@ -14,12 +14,11 @@ from plugins.manager import get_plugin_manager
 
 
 class ReplyService:
-    def __init__(self, *, logger, get_sticker_mgr, extract_reaction_markers, set_message_reaction_safe, bot_reply_eligibility):
+    def __init__(self, *, logger, get_sticker_mgr, extract_reaction_markers, set_message_reaction_safe):
         self._logger = logger
         self._get_sticker_mgr = get_sticker_mgr
         self._extract_reaction_markers = extract_reaction_markers
         self._set_message_reaction_safe = set_message_reaction_safe
-        self._bot_reply_eligibility = bot_reply_eligibility
 
     async def keep_typing(self, bot, chat_id: int, stop_event: asyncio.Event, timeout: float = 120.0):
         deadline = asyncio.get_event_loop().time() + timeout
@@ -72,14 +71,12 @@ class ReplyService:
                         entities=entities,
                         reply_to_message_id=msg.message_id,
                     )
-                    self._bot_reply_eligibility[sent.message_id] = False
                 else:
                     sent = await bot.send_message(
                         chat_id=chat_id,
                         text=send_text,
                         entities=entities,
                     )
-                    self._bot_reply_eligibility[sent.message_id] = False
 
                 sticker_mgr = self._get_sticker_mgr()
                 if sticker_emoji and sticker_mgr:

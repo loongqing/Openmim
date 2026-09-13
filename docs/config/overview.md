@@ -26,9 +26,10 @@ Openmim 通过 `data/project_config.json` 或**环境变量**进行配置。
   "ADMIN_IDS": ["your-user-id"],
   "LOG_LEVEL": "INFO",
 
+  "LLM_PROVIDER": "openai_responses",
   "LLM_API_BASE": "https://api.openai.com/v1",
   "LLM_API_KEY": "sk-...",
-  "LLM_MODEL": "gpt-4o-mini",
+  "LLM_MODEL": "gpt-5",
   "LLM_TIMEOUT": 120,
   "LLM_TEMPERATURE": 0.9,
   "LLM_MAX_TOKENS": 1024,
@@ -143,15 +144,18 @@ Openmim 通过 `data/project_config.json` 或**环境变量**进行配置。
 
 ```json
 {
+  "LLM_PROVIDER": "openai_responses",
   "LLM_API_BASE": "https://api.openai.com/v1",
   "LLM_API_KEY": "sk-...",
-  "LLM_MODEL": "gpt-4o-mini",
+  "LLM_MODEL": "gpt-5",
   "LLM_TIMEOUT": 120,
   "LLM_TEMPERATURE": 0.9,
   "LLM_MAX_TOKENS": 1024,
   "STREAM_ENABLED": false
 }
 ```
+
+`LLM_PROVIDER` 支持 `openai_compatible`、`openai_responses` 和 `anthropic`；端点及完整示例见 [LLM 配置](./llm.md)。
 
 ### 图片处理配置
 

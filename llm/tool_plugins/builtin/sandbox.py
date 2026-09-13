@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.e2b_tool import E2B_TOOLS, execute_run_python, execute_run_shell
 
 RUN_PYTHON_TOOL_DEFINITION, RUN_SHELL_TOOL_DEFINITION = E2B_TOOLS

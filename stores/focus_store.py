@@ -4,11 +4,11 @@ from __future__ import annotations
 import os
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from sqlalchemy import delete
 
 from stores.orm import FocusCriteriaRow, FocusStateRow, FocusSuppressionRow, orm_session
+from stores.timestamps import utc_now_iso
 from app_config.config import DATA_DIR
 
 DEFAULT_FOCUS_CRITERIA = {"extra_note": ""}
@@ -35,10 +35,6 @@ class FocusStore:
             pass
 
     @staticmethod
-    def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
-
-    @staticmethod
     def _state(row: FocusStateRow) -> FocusState:
         return FocusState(
             chat_id=row.chat_id,
@@ -50,7 +46,7 @@ class FocusStore:
 
     def get(self, chat_id: str | int) -> FocusState:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         with orm_session(self.db_path) as session:
             row = session.get(FocusStateRow, cid)
             if row is None:
@@ -61,7 +57,7 @@ class FocusStore:
 
     def refresh(self, chat_id: str | int) -> FocusState:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         with orm_session(self.db_path) as session:
             row = session.get(FocusStateRow, cid)
             if row is None:
@@ -76,7 +72,7 @@ class FocusStore:
 
     def reserve_bot_trigger(self, chat_id: str | int) -> tuple[FocusState, bool]:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         reserved = False
         with orm_session(self.db_path) as session:
             # Force SQLite write lock for atomic read-modify-write.
@@ -98,7 +94,7 @@ class FocusStore:
 
     def clear(self, chat_id: str | int) -> None:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         with orm_session(self.db_path) as session:
             row = session.get(FocusStateRow, cid)
             if row is None:
@@ -117,7 +113,7 @@ class FocusStore:
 
     def set_suppressed(self, chat_id: str | int, suppressed: bool, reason: str = "") -> None:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         safe_reason = (reason or "").strip()[:500]
         with orm_session(self.db_path) as session:
             row = session.get(FocusSuppressionRow, cid)
@@ -151,7 +147,7 @@ class FocusStore:
 
     def set_criteria(self, chat_id: str | int, criteria: dict) -> None:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         criteria_json = json.dumps(criteria, ensure_ascii=False)
         with orm_session(self.db_path) as session:
             row = session.get(FocusCriteriaRow, cid)

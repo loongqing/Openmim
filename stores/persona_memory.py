@@ -15,12 +15,14 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 
+from app.runtime_config import get_shared_runtime_config
+from llm.provider_protocols import build_request, normalize_provider, parse_response, provider_endpoint, provider_headers
 from stores.memory_store import (
     add_memory,
     list_memories,
@@ -28,12 +30,10 @@ from stores.memory_store import (
 from stores.group_settings_store import get_group_username_anonymization_enabled
 
 from stores.orm import runtime_sql_connection
+from stores.timestamps import cst_now_iso
 from app_config.config import (
     DATA_DIR,
     WORKSPACE_DIR,
-    LLM_API_BASE,
-    LLM_API_KEY,
-    LLM_MODEL,
     LLM_TIMEOUT,
     PERSONA_MEMORY_DB_FILE,
     PERSONA_MEMORY_ENABLED,
@@ -49,6 +49,7 @@ from app_config.config import (
 )
 
 logger = logging.getLogger(__name__)
+_RUNTIME_CONFIG = get_shared_runtime_config()
 DB_PATH = PERSONA_MEMORY_DB_FILE if os.path.isabs(PERSONA_MEMORY_DB_FILE) else os.path.join(DATA_DIR, PERSONA_MEMORY_DB_FILE)
 
 SENSITIVE_PATTERNS = [
@@ -104,9 +105,6 @@ def _mask_text_for_prompt(text: str, refs: list[PersonaUserRef], chat_id: int) -
             if raw and raw != label:
                 masked = masked.replace(raw, label)
     return masked
-
-def _now() -> str:
-    return datetime.now(timezone(timedelta(hours=8))).isoformat()
 
 
 def _connect():
@@ -179,7 +177,7 @@ def upsert_known_user(chat_id: int, user_id: int | None, display_name: str = "",
     if display_name.startswith("用户_") and (anon_label == display_name or not anon_label):
         display_name = ""
 
-    now = _now()
+    now = cst_now_iso()
     with _connect() as conn:
         conn.execute(
             """
@@ -223,7 +221,7 @@ def _migrate_chat_persona_to_global() -> None:
                     patch = patch if isinstance(patch, dict) else {}
                 except Exception:
                     patch = {}
-                item = by_user.setdefault(uid, {"persona": {}, "display_name": "", "username": "", "created_at": row["created_at"] or row["updated_at"] or _now(), "updated_at": row["updated_at"] or _now()})
+                item = by_user.setdefault(uid, {"persona": {}, "display_name": "", "username": "", "created_at": row["created_at"] or row["updated_at"] or cst_now_iso(), "updated_at": row["updated_at"] or cst_now_iso()})
                 item["persona"] = merge_persona(item["persona"], patch)
                 if row["display_name"]:
                     item["display_name"] = row["display_name"]
@@ -259,7 +257,7 @@ def _migrate_chat_persona_to_global() -> None:
                         persona_json=excluded.persona_json,
                         updated_at=excluded.updated_at
                     """,
-                    (uid, display_name or "", username or "", json.dumps(persona, ensure_ascii=False, separators=(",", ":")), item["updated_at"] or _now(), created_at or _now()),
+                    (uid, display_name or "", username or "", json.dumps(persona, ensure_ascii=False, separators=(",", ":")), item["updated_at"] or cst_now_iso(), created_at or cst_now_iso()),
                 )
             conn.commit()
     except Exception:
@@ -286,7 +284,7 @@ def save_global_persona(ref: PersonaUserRef, persona: dict[str, Any]) -> None:
     persona = compact_persona(persona)
     if _empty_persona(persona):
         return
-    now = _now()
+    now = cst_now_iso()
     raw = json.dumps(persona, ensure_ascii=False, separators=(",", ":"))
     username = (ref.username or "").lstrip("@").strip()
     with _connect() as conn:
@@ -456,7 +454,7 @@ def save_persona(chat_id: int, ref: PersonaUserRef, persona: dict[str, Any]) -> 
     if _empty_persona(persona):
         return
     save_global_persona(ref, persona)
-    now = _now()
+    now = cst_now_iso()
     raw = json.dumps(persona, ensure_ascii=False, separators=(",", ":"))
     with _connect() as conn:
         conn.execute(
@@ -729,12 +727,17 @@ def _should_skip_update_text(text: str) -> bool:
     return False
 
 
-_update_locks: dict[int, float] = {}
+_update_locks: dict[tuple[int, int], float] = {}
 
 
 def _cooldown_ok(chat_id: int, user_id: int) -> bool:
     now_ts = datetime.now().timestamp()
-    key = int(user_id)
+    if len(_update_locks) > 1000:
+        cutoff = now_ts - max(1, PERSONA_MEMORY_UPDATE_INTERVAL_SECONDS)
+        for stale_key, last_seen in list(_update_locks.items()):
+            if last_seen < cutoff:
+                _update_locks.pop(stale_key, None)
+    key = (int(chat_id), int(user_id))
     last = _update_locks.get(key, 0)
     if now_ts - last < PERSONA_MEMORY_UPDATE_INTERVAL_SECONDS:
         return False
@@ -800,23 +803,26 @@ Bot 本轮回复：
 """
 
     try:
+        llm_cfg = _RUNTIME_CONFIG.get_effective_llm(chat_id)
+        provider = normalize_provider(llm_cfg.provider)
         async with httpx.AsyncClient(
-            base_url=LLM_API_BASE,
+            base_url=llm_cfg.api_base,
             timeout=httpx.Timeout(min(LLM_TIMEOUT, 60)),
-            headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+            headers=provider_headers(provider, llm_cfg.api_key),
         ) as client:
             resp = await client.post(
-                "/chat/completions",
-                json={
-                    "model": LLM_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                    "max_tokens": 700,
-                    "stream": False,
-                },
+                provider_endpoint(provider),
+                json=build_request(
+                    provider,
+                    model=llm_cfg.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=700,
+                    stream=False,
+                ),
             )
             resp.raise_for_status()
-            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+            content = parse_response(provider, resp.json()).text
     except Exception as e:
         logger.warning("人格记忆更新 LLM 调用失败: %s", e)
         return

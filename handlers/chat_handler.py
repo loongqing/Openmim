@@ -8,7 +8,7 @@ import asyncio
 import re
 from typing import Optional
 
-from telegram import Update, Message
+from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 from app_config.config import (
     MSG_SEPARATOR,
@@ -23,19 +23,12 @@ from app_config.config import (
     DE_AI_ENABLED,
     PERSONA_MEMORY_ENABLED,
 )
-from llm.llm_client import (
-    get_llm_client,
-    LLMResponse,
-)
+from llm.llm_client import get_llm_client
 from stores.context_manager import (
     ContextMessage,
     ContextManager,
 )
 from features.sticker_manager import StickerManager
-from features.auto_policies import (
-    get_edit_interval_seconds,
-    get_max_reply_segments,
-)
 from stores.group_settings_store import get_group_free_reply_mode
 from stores.reply_tracker import (
     mark_replied,
@@ -61,8 +54,8 @@ from services.persona_service import PersonaService
 from services.message_parser import MessageParser
 from services.reaction_service import ReactionService
 from services.focus_service import FocusService
-from services.micro_action_service import MicroActionService
 from services.passive_message_service import PassiveMessageService
+from services.session_lock import SessionLockManager
 from plugins.base import MessageHookContext
 from plugins.manager import get_plugin_manager
 
@@ -75,13 +68,26 @@ _sticker_mgr: Optional[StickerManager] = None
 _whitelist: set = set()
 
 # concurrent_updates 开启后：不同聊天可并发，同一聊天必须串行，避免上下文/回复乱序。
-_chat_session_locks: dict[int, asyncio.Lock] = {}
+_session_lock = SessionLockManager()
 _bot_loop_cooldown_until: dict[int, float] = {}
 # message_id -> whether this bot message may be used as a bot-to-bot trigger source
-_bot_reply_eligibility: dict[int, bool] = {}
 
 _message_parser = MessageParser()
 _reaction_service = ReactionService(logger=logger)
+
+# ── 运行时节奏策略（原 features/auto_policies.py 内联） ──
+EDIT_INTERVAL_SECONDS: float = 1.0
+MAX_REPLY_SEGMENTS: int | None = 5
+
+
+def get_edit_interval_seconds() -> float:
+    return float(EDIT_INTERVAL_SECONDS)
+
+
+def get_max_reply_segments(default: int = 4) -> int:
+    if MAX_REPLY_SEGMENTS is not None:
+        return int(MAX_REPLY_SEGMENTS)
+    return int(default)
 _focus_service = FocusService(
     logger=logger,
     extract_text=_message_parser.extract_text,
@@ -107,16 +113,16 @@ _gatekeeper = ChatGatekeeper(
 _message_context_service = MessageContextService(
     logger=logger,
     get_context_mgr=lambda: _context_mgr,
-    extract_text=lambda msg: _message_parser.extract_text(msg),
-    get_sender_name=lambda msg: _message_parser.get_sender_name(msg),
-    is_reply_to_bot=lambda msg, bot_username, bot_id=0: _message_parser.is_reply_to_bot(msg, bot_username, bot_id),
-    is_mention_bot=lambda msg, bot_username: _message_parser.is_mention_bot(msg, bot_username),
-    get_photo_file_id=lambda msg: _media_service.get_photo_file_id(msg),
+    extract_text=_message_parser.extract_text,
+    get_sender_name=_message_parser.get_sender_name,
+    is_reply_to_bot=_message_parser.is_reply_to_bot,
+    is_mention_bot=_message_parser.is_mention_bot,
+    get_photo_file_id=_media_service.get_photo_file_id,
 )
 _persona_service = PersonaService(
-    extract_text=lambda msg: _message_parser.extract_text(msg),
-    get_sender_name=lambda msg: _message_parser.get_sender_name(msg),
-    anonymize_sender=lambda user_id, display_name: _message_context_service.anonymize_sender(user_id, display_name),
+    extract_text=_message_parser.extract_text,
+    get_sender_name=_message_parser.get_sender_name,
+    anonymize_sender=_message_context_service.anonymize_sender,
 )
 _trigger_service = TriggerService(
     is_reply_to_bot=_message_parser.is_reply_to_bot,
@@ -126,15 +132,10 @@ _trigger_service = TriggerService(
     gatekeeper=_gatekeeper,
     whitelist=_whitelist,
 )
-_micro_action_service = MicroActionService(
-    logger=logger,
-    get_context_mgr=lambda: _context_mgr,
-    bot_reply_eligibility=_bot_reply_eligibility,
-)
 _passive_message_service = PassiveMessageService(
     logger=logger,
     message_context_service=_message_context_service,
-    micro_action_service=_micro_action_service,
+    get_context_mgr=lambda: _context_mgr,
     micro_actions_enabled=MICRO_ACTIONS_ENABLED,
 )
 
@@ -158,14 +159,6 @@ async def _is_user_in_group(bot, chat_id: int, user_id: int) -> bool:
         # 查询失败时保守假设用户仍在群内，避免误触全回复行为
         return True
 
-def _get_chat_session_lock(chat_id: int) -> asyncio.Lock:
-    lock = _chat_session_locks.get(chat_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _chat_session_locks[chat_id] = lock
-    return lock
-
-
 async def locked_group_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # business_message 由 business_handler 专门处理，chat handler 不介入
     if update.business_message is not None:
@@ -173,8 +166,7 @@ async def locked_group_message_handler(update: Update, context: ContextTypes.DEF
     chat = update.effective_chat
     if not chat:
         return await group_message_handler(update, context)
-    lock = _get_chat_session_lock(chat.id)
-    async with lock:
+    async with _session_lock.acquire(chat.id):
         return await group_message_handler(update, context)
 
 
@@ -187,13 +179,6 @@ def init_handler(
     global _context_mgr, _sticker_mgr, _whitelist
     _context_mgr = context_mgr
     _sticker_mgr = sticker_mgr
-    _whitelist = whitelist
-    _trigger_service.update_whitelist(whitelist)
-
-
-def update_whitelist(whitelist: set):
-    """外部更新白名单引用"""
-    global _whitelist
     _whitelist = whitelist
     _trigger_service.update_whitelist(whitelist)
 
@@ -217,29 +202,11 @@ GAME_MARKER_RE = re.compile(r"\[(GAME_SOLVED|GAME_END)\]")
 # ----------------------------------------------------------------
 # 发送回复
 # ----------------------------------------------------------------
-async def _keep_typing(bot, chat_id: int, stop_event: asyncio.Event, timeout: float = 120.0):
-    """后台循环刷新 typing 状态，每 4.5 秒一次，超时后自动退出"""
-    await _reply_service.keep_typing(bot, chat_id, stop_event, timeout)
-
-
-async def _send_llm_response(
-    msg: Message,
-    response: LLMResponse,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    """将 LLM 响应逐条发送，第一条回复原始消息"""
-    await _reply_service.send_llm_response(msg, response, context)
-
-
-# ----------------------------------------------------------------
-# 是否应该触发
-# ----------------------------------------------------------------
 _reply_service = ReplyService(
     logger=logger,
     get_sticker_mgr=lambda: _sticker_mgr,
     extract_reaction_markers=_reaction_service.extract_markers,
     set_message_reaction_safe=_reaction_service.set_message_reaction_safe,
-    bot_reply_eligibility=_bot_reply_eligibility,
 )
 
 
@@ -248,25 +215,24 @@ _chat_orchestrator = ChatOrchestrator(
     get_llm_client=get_llm_client,
     get_group_free_reply_mode=get_group_free_reply_mode,
     get_replied_map=get_replied_map,
-    keep_typing=_keep_typing,
+    keep_typing=_reply_service.keep_typing,
     sticker_prefix=STICKER_PREFIX,
     sticker_suffix=STICKER_SUFFIX,
     game_marker_re=GAME_MARKER_RE,
     text_tool_marker_re=re.compile(r'\\[TOOL:\\w+\\].*?\\[/TOOL\\]|\\[TOOL_RESULT:\\w+\\].*?\\[/TOOL_RESULT\\]', re.DOTALL),
-    bot_reply_eligibility=_bot_reply_eligibility,
     mark_replied=mark_replied,
     get_edit_interval_seconds=get_edit_interval_seconds,
     extract_reaction_markers=_reaction_service.extract_markers,
     set_message_reaction_safe=_reaction_service.set_message_reaction_safe,
-    clear_active_game=lambda cid: __import__('features.playables', fromlist=['_clear_active_game'])._clear_active_game(cid),
+    clear_active_game=lambda cid: __import__('features.history_guess', fromlist=['_clear_active_game'])._clear_active_game(cid),
     de_ai_enabled=DE_AI_ENABLED,
     de_ai=de_ai,
     get_max_reply_segments=get_max_reply_segments,
     msg_separator=MSG_SEPARATOR,
     get_sticker_mgr=lambda: _sticker_mgr,
-    record_message=lambda msg, bot_username, bot_id=0: _message_context_service.record_message(msg, bot_username, bot_id),
-    record_bot_response=lambda chat_id, bot_username, segments, stickers=None: _message_context_service.record_bot_response(chat_id, bot_username, segments, stickers),
-    deanon_text=lambda text, chat_id: _message_context_service.deanon_text(text, chat_id),
+    record_message=_message_context_service.record_message,
+    record_bot_response=_message_context_service.record_bot_response,
+    deanon_text=_message_context_service.deanon_text,
     record_bot_reply=lambda chat_id, segments, stickers: __import__('stores.human_behavior', fromlist=['record_bot_reply']).record_bot_reply(chat_id, segments, stickers),
     persona_memory_enabled=PERSONA_MEMORY_ENABLED,
     update_persona_after_turn=update_persona_after_turn,

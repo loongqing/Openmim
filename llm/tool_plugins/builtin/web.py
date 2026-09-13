@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.web_search import (
     FETCH_URL_TOOL_DEFINITION,
     GET_CURRENT_TIME_TOOL_DEFINITION,

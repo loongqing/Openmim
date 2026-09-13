@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import app_config.config as legacy_config
 from stores.group_settings_store import (
@@ -21,6 +20,7 @@ from stores.group_settings_store import (
     get_group_llm_api_base,
     get_group_llm_api_key,
     get_group_llm_model,
+    get_group_llm_provider,
     get_group_persona_prompt,
     get_group_scoring_criteria,
     get_group_tavily_api_key,
@@ -31,6 +31,7 @@ from stores.model_store import get_active_model
 
 @dataclass(frozen=True)
 class EffectiveLLMConfig:
+    provider: str
     model: str
     api_key: str
     api_base: str
@@ -46,53 +47,50 @@ class EffectiveImageGenConfig:
 class RuntimeConfig:
     """统一的运行时配置访问入口。"""
 
-    def __init__(self, settings: Any):
-        self.settings = settings
-
     # ---- app/global ----
     @property
     def bot_token(self) -> str:
-        return self.settings.telegram.bot_token
+        return legacy_config.BOT_TOKEN
 
     @property
     def concurrent_updates(self) -> int:
-        return self.settings.telegram.concurrent_updates
+        return max(1, legacy_config.TELEGRAM_CONCURRENT_UPDATES)
 
     @property
     def context_message_count(self) -> int:
-        return self.settings.context.message_count
+        return legacy_config.CONTEXT_MESSAGE_COUNT
 
     @property
     def context_max_text_chars(self) -> int:
-        return self.settings.context.max_text_chars
+        return legacy_config.CONTEXT_MAX_TEXT_CHARS
 
     @property
     def bot_context_max_chars(self) -> int:
-        return self.settings.context.bot_context_max_chars
+        return legacy_config.BOT_CONTEXT_MAX_CHARS
 
     @property
     def admin_ids(self) -> list[int]:
-        return list(self.settings.admin_ids)
+        return [int(value) for value in legacy_config.ADMIN_IDS]
 
     @property
     def business_enabled(self) -> bool:
-        return self.settings.features.business_enabled
+        return legacy_config.BUSINESS_ENABLED
 
     @property
     def llm_timeout(self) -> int:
-        return self.settings.llm.timeout
+        return legacy_config.LLM_TIMEOUT
 
     @property
     def llm_temperature(self) -> float:
-        return self.settings.llm.temperature
+        return legacy_config.LLM_TEMPERATURE
 
     @property
     def llm_max_tokens(self) -> int:
-        return self.settings.llm.max_tokens
+        return legacy_config.LLM_MAX_TOKENS
 
     @property
     def stream_enabled(self) -> bool:
-        return self.settings.llm.stream_enabled
+        return legacy_config.STREAM_ENABLED
 
     # ---- feature flags from legacy config (阶段性兼容) ----
     @property
@@ -149,14 +147,18 @@ class RuntimeConfig:
 
     # ---- effective per-chat configs ----
     def get_effective_llm(self, chat_id: int | None = None) -> EffectiveLLMConfig:
-        model = get_active_model() or self.settings.llm.model
+        provider = legacy_config.LLM_PROVIDER
+        model = get_active_model() or legacy_config.LLM_MODEL
         api_key = legacy_config.LLM_API_KEY
-        api_base = self.settings.llm.api_base
+        api_base = legacy_config.LLM_API_BASE
 
         if chat_id is not None:
+            custom_provider = get_group_llm_provider(chat_id)
             custom_model = get_group_llm_model(chat_id)
             custom_key = get_group_llm_api_key(chat_id)
             custom_base = get_group_llm_api_base(chat_id)
+            if custom_provider:
+                provider = custom_provider
             if custom_model:
                 model = custom_model
             if custom_key:
@@ -165,7 +167,7 @@ class RuntimeConfig:
                 api_base = custom_base
 
 
-        return EffectiveLLMConfig(model=model, api_key=api_key, api_base=api_base)
+        return EffectiveLLMConfig(provider=provider, model=model, api_key=api_key, api_base=api_base)
 
     def get_effective_image_gen(self, chat_id: int | None = None) -> EffectiveImageGenConfig:
         model = legacy_config.IMAGE_GEN_MODEL
@@ -207,4 +209,15 @@ class RuntimeConfig:
 
     def get_group_username_anonymization_enabled(self, chat_id: int | None) -> bool:
         return get_group_username_anonymization_enabled(chat_id) if chat_id is not None else True
+
+
+_SHARED_RUNTIME_CONFIG: RuntimeConfig | None = None
+
+
+def get_shared_runtime_config() -> RuntimeConfig:
+    """Return the process-wide runtime configuration facade."""
+    global _SHARED_RUNTIME_CONFIG
+    if _SHARED_RUNTIME_CONFIG is None:
+        _SHARED_RUNTIME_CONFIG = RuntimeConfig()
+    return _SHARED_RUNTIME_CONFIG
 

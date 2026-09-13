@@ -250,7 +250,8 @@ def install_skill_upload(body: dict) -> dict:
     max_bytes = int(getattr(config, "WEB_PANEL_SKILL_UPLOAD_MAX_BYTES", 2_097_152))
     if len(content) > max_bytes:
         raise ValueError(f"upload too large (>{max_bytes} bytes)")
-    skill_root = Path(getattr(config, "LOCAL_SKILL_ROOT", "data/skills"))
+    from integrations.skill_market_client import get_skill_root
+    skill_root = get_skill_root()
     if filename.endswith(".zip"):
         return install_skill_zip(content, skill_root=skill_root, overwrite=overwrite)
     if filename == "skill.md" or filename.endswith(".md"):

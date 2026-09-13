@@ -6,7 +6,7 @@
 
 - Python 3.11 或更高版本
 - 一个 Telegram Bot Token（通过 [@BotFather](https://t.me/BotFather) 创建）
-- 一个 OpenAI 兼容的 LLM API（OpenAI、DeepSeek、本地 Ollama 等均可）
+- 一个受支持的 LLM API（OpenAI、Anthropic、DeepSeek、本地 Ollama 等均可）
 
 ## 第一步：克隆仓库
 
@@ -29,11 +29,14 @@ pip install -r requirements.txt
 {
   "BOT_TOKEN": "123456789:你的TelegramBotToken",
   "ADMIN_IDS": ["你的TelegramUserID"],
+  "LLM_PROVIDER": "openai_responses",
   "LLM_API_BASE": "https://api.openai.com/v1",
   "LLM_API_KEY": "sk-...",
-  "LLM_MODEL": "gpt-4o-mini"
+  "LLM_MODEL": "gpt-5"
 }
 ```
+
+如需使用 Anthropic，将 `LLM_PROVIDER` 改为 `anthropic`，并将 Base、Key 和模型改成对应的 Anthropic 配置。其他兼容 OpenAI Chat Completions 的服务继续使用默认值 `openai_compatible`。详见 [LLM 配置](../config/llm.md)。
 
 ::: tip 如何获取 Telegram User ID？
 给 [@userinfobot](https://t.me/userinfobot) 发送任意消息，它会返回你的用户 ID。

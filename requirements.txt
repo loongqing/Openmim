@@ -1,4 +1,4 @@
-python-telegram-bot==22.8
+python-telegram-bot[job-queue]==22.8
 httpx>=0.25.0
 e2b-code-interpreter>=2.8.0
 cryptography>=42.0.0
@@ -9,3 +9,4 @@ fastapi>=0.115.0
 uvicorn>=0.30.0
 jinja2>=3.1.0
 python-multipart>=0.0.9
+PyYAML>=6.0.0

@@ -55,7 +55,7 @@ Openmim 提供两种管理方式：Telegram 内联面板和 Web 面板。
 - 设置回复偏好
 
 #### 接口配置（BYOK）
-- 配置独立 LLM 模型/API
+- 配置独立 LLM 协议、模型、API Key 和 Base URL
 - 配置独立图片生成 API
 - 配置独立 Tavily 搜索 Key
 
@@ -75,6 +75,7 @@ Openmim 提供两种管理方式：Telegram 内联面板和 Web 面板。
 **权限**：私聊机器人的任意用户（Business 模式中为所有者）
 
 **功能**：
+- 配置独立 LLM 协议、模型、API Key 和 Base URL
 - 设置机器人代表的名字
 - 自定义人设 prompt
 - 管理同义词（说话风格学习）

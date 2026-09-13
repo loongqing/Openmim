@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -116,6 +118,17 @@ async def _cleanup_expired_sessions() -> None:
     for sess in stale_sessions:
         logger.info("🧹 回收空闲 E2B 沙箱 | chat=%s | idle>=%ss", sess.chat_id, _IDLE_TIMEOUT_S)
         await _kill_session(sess)
+
+    async with _SHIPYARD_GUARD:
+        stale_shipyard_keys = [
+            key
+            for key, sess in _SHIPYARD_SESSIONS.items()
+            if now - sess.last_used_at > _IDLE_TIMEOUT_S and not sess.lock.locked()
+        ]
+        for key in stale_shipyard_keys:
+            _SHIPYARD_SESSIONS.pop(key, None)
+    if stale_shipyard_keys:
+        logger.info("🧹 回收 %s 个空闲 Shipyard session", len(stale_shipyard_keys))
 
 
 # ── 后台定时清理 ──────────────────────────────────────────
@@ -208,8 +221,18 @@ async def _with_sandbox(chat_id: str | int | None, run):
             sess.last_used_at = time.time()
             return result
         except asyncio.TimeoutError:
+            async with _SESSIONS_GUARD:
+                if _SESSIONS.get(key) is sess:
+                    _SESSIONS.pop(key, None)
+            await _kill_session(sess)
             logger.warning("E2B 执行超时（>%ss） | chat=%s", _EXEC_HARD_TIMEOUT, key)
             return f"[执行超时：超过 {_EXEC_HARD_TIMEOUT} 秒未完成，已中止]"
+        except asyncio.CancelledError:
+            async with _SESSIONS_GUARD:
+                if _SESSIONS.get(key) is sess:
+                    _SESSIONS.pop(key, None)
+            await asyncio.shield(_kill_session(sess))
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.exception("E2B 执行异常 | chat=%s", key)
             return f"[E2B 执行失败：{type(exc).__name__}: {str(exc)[:200]}]"
@@ -250,6 +273,7 @@ async def _get_or_create_shipyard_session(chat_id: str) -> _ShipyardSession:
     if not ok:
         raise RuntimeError(reason)
 
+    await _cleanup_expired_sessions()
     endpoint = str(getattr(config, "SHIPYARD_ENDPOINT", "")).rstrip("/")
     ttl = int(getattr(config, "SHIPYARD_TTL", 3600))
     max_sessions = int(getattr(config, "SHIPYARD_MAX_SESSIONS", 1))
@@ -313,28 +337,40 @@ def _format_shipyard_result(data: dict) -> str:
 
 async def _shipyard_exec(chat_id: str | int | None, operation_type: str, payload: dict) -> str:
     key = str(chat_id) if chat_id is not None else "global"
-    try:
-        sess = await _get_or_create_shipyard_session(key)
-    except Exception as exc:  # noqa: BLE001
-        return str(exc)
-
     endpoint = str(getattr(config, "SHIPYARD_ENDPOINT", "")).rstrip("/")
-    async with sess.lock:
-        sess.last_used_at = time.time()
+    for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(_EXEC_HARD_TIMEOUT, connect=10.0)) as client:
-                resp = await client.post(
-                    f"{endpoint}/ship/{sess.ship_id}/exec",
-                    json={"type": operation_type, "payload": payload},
-                    headers=_shipyard_headers(sess.session_id),
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            sess.last_used_at = time.time()
-            return _format_shipyard_result(data)
+            sess = await _get_or_create_shipyard_session(key)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Shipyard 执行异常 | chat=%s | ship=%s", key, sess.ship_id)
-            return f"[Shipyard 执行失败：{type(exc).__name__}: {str(exc)[:200]}]"
+            return str(exc)
+
+        async with sess.lock:
+            sess.last_used_at = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(_EXEC_HARD_TIMEOUT, connect=10.0)) as client:
+                    resp = await client.post(
+                        f"{endpoint}/ship/{sess.ship_id}/exec",
+                        json={"type": operation_type, "payload": payload},
+                        headers=_shipyard_headers(sess.session_id),
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                sess.last_used_at = time.time()
+                return _format_shipyard_result(data)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if attempt == 0 and status in (404, 410):
+                    async with _SHIPYARD_GUARD:
+                        if _SHIPYARD_SESSIONS.get(key) is sess:
+                            _SHIPYARD_SESSIONS.pop(key, None)
+                    logger.info("Shipyard session 已失效，重建后重试 | chat=%s | status=%s", key, status)
+                    continue
+                logger.exception("Shipyard 执行异常 | chat=%s | ship=%s", key, sess.ship_id)
+                return f"[Shipyard 执行失败：HTTP {status}]"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Shipyard 执行异常 | chat=%s | ship=%s", key, sess.ship_id)
+                return f"[Shipyard 执行失败：{type(exc).__name__}: {str(exc)[:200]}]"
+    return "[Shipyard 执行失败：session 重建失败]"
 
 
 def _safe_local_key(chat_id: str | int | None) -> str:
@@ -352,6 +388,41 @@ def _local_workdir(chat_id: str | int | None) -> Path:
 
 async def _run_local_process(argv: list[str], *, input_text: str | None = None, cwd: Path) -> str:
     timeout = int(getattr(config, "LOCAL_SANDBOX_TIMEOUT", _EXEC_HARD_TIMEOUT))
+    proc = None
+    process_options = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+
+    async def _kill_windows_tree(pid: int) -> None:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+    async def _terminate() -> None:
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            if os.name == "nt":
+                await _kill_windows_tree(proc.pid)
+                if proc.returncode is None:
+                    proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            logger.debug("Local sandbox process kill failed", exc_info=True)
+        try:
+            await proc.communicate()
+        except Exception:
+            logger.debug("Local sandbox process reap failed", exc_info=True)
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -360,14 +431,15 @@ async def _run_local_process(argv: list[str], *, input_text: str | None = None, 
             stderr=asyncio.subprocess.PIPE,
             cwd=str(cwd),
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            **process_options,
         )
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(input_text.encode() if input_text is not None else None), timeout=timeout)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()  # type: ignore[name-defined]
-        except Exception:
-            pass
+        await _terminate()
         return f"[本地沙箱执行超时：超过 {timeout} 秒未完成，已中止]"
+    except asyncio.CancelledError:
+        await asyncio.shield(_terminate())
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Local sandbox 执行异常 | cwd=%s", cwd)
         return f"[本地沙箱执行失败：{type(exc).__name__}: {str(exc)[:200]}]"

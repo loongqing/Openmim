@@ -417,8 +417,13 @@ def start_idle_topic_loop(application):
     _TASK = asyncio.create_task(_loop(application), name="idle_topic_seed")
 
 
-def stop_idle_topic_loop():
+async def stop_idle_topic_loop():
     global _TASK
-    if _TASK is not None:
-        _TASK.cancel()
-        _TASK = None
+    task = _TASK
+    _TASK = None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

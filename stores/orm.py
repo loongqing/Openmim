@@ -357,9 +357,22 @@ def create_runtime_engine(db_file: str):
     return engine
 
 
+_engine_cache: dict[str, Any] = {}
+
+
+def get_engine(db_file: str):
+    """按数据库路径缓存 SQLAlchemy 引擎，避免每次会话重建引擎 + create_all。"""
+    key = os.path.abspath(db_file)
+    engine = _engine_cache.get(key)
+    if engine is None:
+        engine = create_runtime_engine(db_file)
+        _engine_cache[key] = engine
+    return engine
+
+
 @contextmanager
 def orm_session(db_file: str) -> Iterator[Session]:
-    engine = create_runtime_engine(db_file)
+    engine = get_engine(db_file)
     maker = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     session = maker()
     try:
@@ -370,7 +383,6 @@ def orm_session(db_file: str) -> Iterator[Session]:
         raise
     finally:
         session.close()
-        engine.dispose()
 
 
 class _DriverResult:
@@ -390,7 +402,7 @@ class _RuntimeSqlConnection:
     """Small SQLAlchemy-backed adapter for legacy SQL that is not sqlite3-bound."""
 
     def __init__(self, db_file: str):
-        self._engine = create_runtime_engine(db_file)
+        self._engine = get_engine(db_file)
         self._conn = self._engine.connect()
         self._tx = self._conn.begin()
 
@@ -405,7 +417,6 @@ class _RuntimeSqlConnection:
                 self._tx.rollback()
         finally:
             self._conn.close()
-            self._engine.dispose()
         return False
 
     @staticmethod

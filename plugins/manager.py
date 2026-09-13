@@ -69,6 +69,8 @@ class PluginManager:
             logger=logger,
         )
         for plugin in self._plugins:
+            if not self.is_plugin_enabled(plugin.name):
+                continue
             try:
                 await plugin.on_startup(ctx)
             except Exception:
@@ -84,6 +86,8 @@ class PluginManager:
             logger=logger,
         )
         for plugin in reversed(self._plugins):
+            if not self.is_plugin_enabled(plugin.name):
+                continue
             try:
                 await plugin.on_shutdown(ctx)
             except Exception:
@@ -101,6 +105,21 @@ class PluginManager:
         self._disabled_plugins.discard(str(plugin_name))
 
     def toggle_plugin(self, plugin_name: str) -> bool:
+        plugin = next((item for item in self._plugins if item.name == str(plugin_name)), None)
+        if plugin is None:
+            raise ValueError(f"unknown plugin: {plugin_name}")
+        owns_lifecycle = (
+            type(plugin).on_startup is not BotPlugin.on_startup
+            or type(plugin).on_shutdown is not BotPlugin.on_shutdown
+        )
+        if getattr(plugin, "handlers", ()):
+            raise RuntimeError(
+                f"plugin '{plugin_name}' owns Telegram handlers and can only be toggled via config + restart"
+            )
+        if owns_lifecycle:
+            raise RuntimeError(
+                f"plugin '{plugin_name}' owns a lifecycle and must be toggled via config + plugin reload"
+            )
         if self.is_plugin_enabled(plugin_name):
             self.disable_plugin(plugin_name)
             return False
@@ -218,14 +237,55 @@ def load_plugins(
     return manager
 
 
-def reload_plugin_manager() -> PluginManager:
+async def reload_plugin_manager(application: Any) -> PluginManager:
+    """Rebuild the manager while keeping every application reference consistent.
+
+    Plugin modules are intentionally not re-imported here: replacing handler objects in a
+    running python-telegram-bot Application is not atomic.  This operation reloads persisted
+    plugin/tool configuration and reruns plugin lifecycles for the existing plugin set.
+    """
+    if application is None:
+        raise RuntimeError("plugin reload requires the running application")
+
     import app_config.config as config
     try:
         from stores.group_settings_store import get_group_disabled_tools
     except Exception:
         get_group_disabled_tools = None
-    manager = load_plugins(disabled_plugins=getattr(config, "PLUGINS_DISABLED", set()), get_chat_disabled_tools=get_group_disabled_tools)
+    old_manager = get_plugin_manager()
+    manager = load_plugins(
+        disabled_plugins=getattr(config, "PLUGINS_DISABLED", set()),
+        get_chat_disabled_tools=get_group_disabled_tools,
+    )
+
+    def enabled_handlers(plugin_manager: PluginManager) -> tuple[Any, ...]:
+        return tuple(
+            handler
+            for plugin in plugin_manager.plugins
+            if plugin_manager.is_plugin_enabled(plugin.name)
+            for handler in getattr(plugin, "handlers", ())
+        )
+
+    if enabled_handlers(old_manager) != enabled_handlers(manager):
+        raise RuntimeError("enabled plugin handler set changed; restart is required")
+
+    bot_data = getattr(application, "bot_data", None)
+    if bot_data is None:
+        raise RuntimeError("application bot_data is unavailable")
+    app_context = bot_data.get("app_context")
+
+    await old_manager.shutdown(app_context, application)
+    try:
+        await manager.startup(app_context, application)
+    except Exception:
+        # Preserve the previously live manager if the replacement cannot start.
+        await old_manager.startup(app_context, application)
+        raise
+
     set_plugin_manager(manager)
+    bot_data["plugin_manager"] = manager
+    if app_context is not None:
+        app_context.plugin_manager = manager
     return manager
 
 

@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from app_config.customization import get_dict, get_text
+from app_config.customization import get_text
 import app_config.config as runtime_config
 import subprocess
 from typing import Optional
@@ -16,8 +16,7 @@ from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from telegram.constants import ParseMode
-from telegram.error import TelegramError, BadRequest
-from telegram.helpers import escape_markdown
+from telegram.error import TelegramError
 
 from app_config.config import (
     ADMIN_IDS,
@@ -36,49 +35,21 @@ from stores.group_settings_store import (
     get_group_settings,
     set_group_setting,
     reset_group_setting,
-    get_setting_labels,
-    get_setting_descriptions,
     SETTING_IS_SENSITIVE,
     DEFAULT_GROUP_SETTINGS,
     mask_sensitive,
 )
-
-def _admin_examples() -> dict[str, str]:
-    return get_dict("admin_examples", {})
-
-
-def _labels() -> dict[str, str]:
-    return get_setting_labels()
-
-
-def _descriptions() -> dict[str, str]:
-    return get_setting_descriptions()
+from handlers.admin_panel_utils import (
+    admin_examples as _admin_examples,
+    labels as _labels,
+    descriptions as _descriptions,
+    mdv2 as _mdv2,
+    safe_edit as _safe_edit,
+)
 
 
 logger = logging.getLogger(__name__)
 
-
-def _mdv2(text: str) -> str:
-    """Convert the panel's small legacy-Markdown subset (**bold**, `code`) to MarkdownV2."""
-    s = str(text or "")
-    out: list[str] = []
-    i = 0
-    while i < len(s):
-        if s.startswith("**", i):
-            j = s.find("**", i + 2)
-            if j != -1:
-                out.append("*" + escape_markdown(s[i + 2:j], version=2) + "*")
-                i = j + 2
-                continue
-        if s[i] == "`":
-            j = s.find("`", i + 1)
-            if j != -1:
-                out.append("`" + escape_markdown(s[i + 1:j], version=2, entity_type="code") + "`")
-                i = j + 1
-                continue
-        out.append(escape_markdown(s[i], version=2))
-        i += 1
-    return "".join(out)
 
 _PENDING_STORE_KEY = "admin_pending_inputs"
 
@@ -104,26 +75,6 @@ def _clear_admin_pending(context: ContextTypes.DEFAULT_TYPE, user_id: int | str 
         return {}
     return _admin_pending_store(context).pop(str(user_id), {})
 
-
-# ── 安全编辑 ─────────────────────────────────────
-
-async def _safe_edit(query, text: str = None, reply_markup=None, parse_mode=None):
-    try:
-        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except BadRequest as e:
-        msg = str(e).lower()
-        if "not modified" in msg:
-            return
-        # 群名/用户名/设置值可能含 Markdown 特殊字符；解析失败时降级纯文本，保证面板可用。
-        if parse_mode is not None and "can't parse entities" in msg:
-            try:
-                await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
-                return
-            except TelegramError:
-                pass
-        raise
-    except TelegramError:
-        pass
 
 # ── Callback 常量 ─────────────────────────────────
 
@@ -170,7 +121,7 @@ ADMIN_GROUP_SETTING_KEYS = [
     "persona_prompt",
     "morning_greeting_enabled", "evening_greeting_enabled", "idle_topic_enabled",
     "free_reply_mode", "reply_preference", "attention_mode", "message_drop_probability",
-    "llm_model", "llm_api_key", "llm_api_base",
+    "llm_provider", "llm_model", "llm_api_key", "llm_api_base",
     "image_gen_api_key", "image_gen_api_base", "image_gen_model", "tavily_api_key",
 ]
 MODEL_DEPENDS_ON = {"llm_model": "llm_api_key", "image_gen_model": "image_gen_api_key"}
@@ -353,7 +304,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == CB_ACCESS_PANEL:
             await _cb_access_panel(query)
         elif data == CB_PLUGIN_RELOAD:
-            await _cb_plugin_reload(query)
+            await _cb_plugin_reload(query, context.application)
         elif data.startswith(CB_PLUGIN_TOGGLE + ":"):
             await _cb_plugin_toggle(query, data.split(":", 2)[2])
         elif data.startswith(CB_ACCESS_EDIT + ":"):
@@ -560,14 +511,23 @@ async def _cb_plugin_panel(query):
 
 async def _cb_plugin_toggle(query, plugin_name: str):
     manager = get_plugin_manager()
-    enabled = manager.toggle_plugin(plugin_name)
+    try:
+        enabled = manager.toggle_plugin(plugin_name)
+    except (RuntimeError, ValueError) as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
     await query.answer(f"{'✅ 已启用' if enabled else '❌ 已禁用'} {plugin_name}", show_alert=False)
     await _cb_plugin_panel(query)
 
 
-async def _cb_plugin_reload(query):
-    reload_plugin_manager()
-    await query.answer("♻️ 插件已热重载", show_alert=False)
+async def _cb_plugin_reload(query, application):
+    try:
+        await reload_plugin_manager(application)
+    except Exception as exc:
+        logger.exception("插件配置重载失败")
+        await query.answer(f"插件重载失败：{exc}", show_alert=True)
+        return
+    await query.answer("♻️ 插件配置与生命周期已重载", show_alert=False)
     await _cb_plugin_panel(query)
 
 
@@ -789,6 +749,7 @@ async def _cb_group_setting_custom(query, context, chat_id: str, key: str):
         "image_gen_model": "例如：gpt-image-1",
         "tavily_api_key": "请输入 Tavily API Key（tvly-...）",
         "llm_model": "例如：gpt-4o-mini / gpt-4o",
+        "llm_provider": "openai_compatible / openai_responses / anthropic",
         "llm_api_key": "请输入 LLM API Key（sk-...）",
         "llm_api_base": "例如：https://api.openai.com/v1",
         "message_drop_probability": "请输入 0~1 的小数，例如：0、0.2、0.75",
@@ -831,6 +792,9 @@ async def admin_group_setting_text_input(update: Update, context: ContextTypes.D
         return
     if key in ADMIN_BOOLEAN_SETTING_KEYS or key == "attention_mode":
         await update.message.reply_text("这个设置请通过面板按钮切换，不需要手动输入。")
+        return
+    if key == "llm_provider" and text.strip().lower() not in {"openai_compatible", "openai_responses", "anthropic"}:
+        await update.message.reply_text("❌ 协议必须是 openai_compatible、openai_responses 或 anthropic。")
         return
     if key == "message_drop_probability":
         try:

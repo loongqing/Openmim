@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from app_config.config import DATA_DIR
 from stores.orm import ChatActivityRow, orm_session
+from stores.timestamps import utc_now_iso
 
 DB_PATH = os.path.join(DATA_DIR, "chat_activity.sqlite3")
 
@@ -32,10 +32,6 @@ class ActivityStore:
             pass
 
     @staticmethod
-    def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
-
-    @staticmethod
     def _state(row: ChatActivityRow) -> ActivityState:
         return ActivityState(
             chat_id=row.chat_id,
@@ -48,7 +44,7 @@ class ActivityStore:
 
     def get(self, chat_id: str | int) -> ActivityState:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         with orm_session(self.db_path) as session:
             row = session.get(ChatActivityRow, cid)
             if row is None:
@@ -59,7 +55,7 @@ class ActivityStore:
 
     def touch_user_message(self, chat_id: str | int) -> ActivityState:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         with orm_session(self.db_path) as session:
             row = session.get(ChatActivityRow, cid)
             if row is None:
@@ -71,7 +67,7 @@ class ActivityStore:
 
     def touch_bot_message(self, chat_id: str | int) -> ActivityState:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         with orm_session(self.db_path) as session:
             row = session.get(ChatActivityRow, cid)
             if row is None:
@@ -83,7 +79,7 @@ class ActivityStore:
 
     def mark_seed_sent(self, chat_id: str | int) -> ActivityState:
         cid = str(chat_id)
-        now = self._now()
+        now = utc_now_iso()
         state = self.get(cid)
         with orm_session(self.db_path) as session:
             row = session.get(ChatActivityRow, cid)

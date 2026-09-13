@@ -19,6 +19,7 @@ from typing import Optional
 import httpx
 
 from app_config.customization import get_text
+from llm.provider_protocols import build_request, normalize_provider, parse_response, provider_endpoint, provider_headers
 
 logger = logging.getLogger("BusinessSynonym")
 
@@ -110,18 +111,17 @@ class SynonymPipeline:
         api_key: str,
         api_base: str,
         model: str,
+        provider: str = "openai_compatible",
         timeout: int = 60,
     ):
         self._api_key = api_key
         self._api_base = api_base
         self._model = model
+        self._provider = normalize_provider(provider)
         self._timeout = timeout
 
     def _make_headers(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        return provider_headers(self._provider, self._api_key)
 
     async def _llm_call(
         self,
@@ -136,18 +136,19 @@ class SynonymPipeline:
             headers=self._make_headers(),
         ) as client:
             resp = await client.post(
-                "/chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stream": False,
-                },
+                provider_endpoint(self._provider),
+                json=build_request(
+                    self._provider,
+                    model=self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=False,
+                ),
             )
             resp.raise_for_status()
             data = resp.json()
-            return (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            return parse_response(self._provider, data).text.strip()
 
     async def process(self, keyword: str) -> SynonymResult:
         """完整流水线。"""

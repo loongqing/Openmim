@@ -3,7 +3,7 @@ from __future__ import annotations
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from plugins.base import BotPlugin, MessageBuildHookContext
-from features.playables import (
+from features.history_guess import (
     COMMAND_STARTS,
     choose_history_guess_difficulty,
     get_active_game_context,

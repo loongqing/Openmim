@@ -9,6 +9,7 @@ Stores group-level overrides for:
   - image_gen_model: custom image gen model (or "default")
   - tavily_api_key: custom Tavily API key (or "default")
   - llm_model: custom LLM model (or "default")
+  - llm_provider: custom LLM API protocol (or "default")
   - llm_api_base: custom LLM API base URL (or "default")
 
 Default interfaces are NEVER exposed — group admins see "使用默认接口".
@@ -51,6 +52,7 @@ DEFAULT_GROUP_SETTINGS: dict[str, str] = {
     "image_gen_model": "default",
     "tavily_api_key": "default",
     "llm_model": "default",
+    "llm_provider": "default",
     "llm_api_key": "default",
     "llm_api_base": "default",
     "enabled_skills": "[]",
@@ -76,6 +78,7 @@ SETTING_LABELS: dict[str, str] = {
     "image_gen_model": "生图模型",
     "tavily_api_key": "Tavily API Key",
     "llm_model": "对话模型",
+    "llm_provider": "对话 API 协议",
     "llm_api_key": "对话 API Key",
     "llm_api_base": "对话 API Base",
     "enabled_skills": "已订阅 Skills",
@@ -100,6 +103,7 @@ SETTING_DESCRIPTIONS: dict[str, str] = {
     "image_gen_model": "AI 生图使用的模型名",
     "tavily_api_key": "Tavily 联网搜索的 API Key",
     "llm_model": "群聊对话使用的 LLM 模型名",
+    "llm_provider": "群聊对话使用的 API 协议（openai_compatible / openai_responses / anthropic）",
     "llm_api_key": "群聊对话使用的 LLM API Key",
     "llm_api_base": "对话 LLM 的 API 端点地址",
     "enabled_skills": "本群已订阅的 Skill 市场 Skills（JSON 数组，存 skill ID 列表）",
@@ -124,6 +128,7 @@ SETTING_IS_SENSITIVE: dict[str, bool] = {
     "image_gen_model": False,
     "tavily_api_key": True,
     "llm_model": False,
+    "llm_provider": False,
     "llm_api_key": True,
     "llm_api_base": False,
     "enabled_skills": False,
@@ -248,6 +253,10 @@ def set_group_settings_bulk(chat_id: str | int, updates: dict[str, str]) -> None
 def set_group_setting(chat_id: str | int, key: str, value: str) -> None:
     """Set a single setting key for a group. 敏感 Key 自动加密存储。"""
     cid = str(chat_id)
+    if key == "llm_provider" and value != "default":
+        value = str(value).strip().lower()
+        if value not in {"openai_compatible", "openai_responses", "anthropic"}:
+            raise ValueError("invalid llm_provider")
     
     # 敏感字段加密后落盘
     store_value = encrypt_value(value) if key in _ENCRYPTED_KEYS and value and value != "default" else value
@@ -316,6 +325,10 @@ def get_group_tavily_api_key(chat_id: str | int | None) -> str | None:
 
 def get_group_llm_model(chat_id: str | int | None) -> str | None:
     return _get_effective(chat_id, "llm_model")
+
+
+def get_group_llm_provider(chat_id: str | int | None) -> str | None:
+    return _get_effective(chat_id, "llm_provider")
 
 
 def get_group_llm_api_key(chat_id: str | int | None) -> str | None:

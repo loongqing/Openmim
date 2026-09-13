@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.web_search import LIST_SKILLS_TOOL_DEFINITION, USE_SKILL_TOOL_DEFINITION
 
 

@@ -2,19 +2,15 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, select, update
 
 from app_config.config import DATA_DIR
 from stores.orm import MemoryRow, orm_session
+from stores.timestamps import utc_now_iso
 
 DB_PATH = os.path.join(DATA_DIR, "self_evolution.sqlite3")
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _row_dict(row: MemoryRow) -> dict[str, Any]:
@@ -62,7 +58,7 @@ def get_memory(memory_id: int) -> dict[str, Any] | None:
 
 def add_memory(scope: str, value: str, key: str = "", chat_id: str | None = None, user_id: str | None = None, source: str = "manual") -> int:
     init_db()
-    now = _now()
+    now = utc_now_iso()
     row = MemoryRow(
         scope=scope,
         key=key or "",
@@ -86,7 +82,7 @@ def set_memory_active(memory_id: int, active: bool) -> bool:
         result = session.execute(
             update(MemoryRow)
             .where(MemoryRow.id == int(memory_id))
-            .values(active=1 if active else 0, updated_at=_now())
+            .values(active=1 if active else 0, updated_at=utc_now_iso())
         )
         return bool(result.rowcount)
 
@@ -103,7 +99,7 @@ def update_memory(memory_id: int, value: str, key: str | None = None) -> bool:
     value = (value or "").strip()
     if not value:
         return False
-    values: dict[str, Any] = {"value": value, "updated_at": _now()}
+    values: dict[str, Any] = {"value": value, "updated_at": utc_now_iso()}
     if key is not None:
         values["key"] = key or ""
     with orm_session(DB_PATH) as session:

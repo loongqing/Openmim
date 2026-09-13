@@ -12,8 +12,16 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = PROJECT_ROOT / "skill"
+
+
+def get_skill_root() -> Path:
+    """Use the same configurable root as the Web Panel uploader."""
+    import app_config.config as config
+
+    configured = Path(getattr(config, "LOCAL_SKILL_ROOT", "data/skills"))
+    if not configured.is_absolute():
+        configured = Path(getattr(config, "WORKSPACE_DIR", Path.cwd())) / configured
+    return configured.resolve()
 
 
 def _parse_frontmatter(raw: str) -> tuple[dict[str, Any], str]:
@@ -72,10 +80,11 @@ def _read_skill(path: Path) -> dict | None:
 
 
 def _scan_skills() -> list[dict]:
-    if not SKILL_ROOT.is_dir():
+    skill_root = get_skill_root()
+    if not skill_root.is_dir():
         return []
     rows: list[dict] = []
-    for child in sorted(SKILL_ROOT.iterdir(), key=lambda p: p.name.lower()):
+    for child in sorted(skill_root.iterdir(), key=lambda p: p.name.lower()):
         if not child.is_dir():
             continue
         row = _read_skill(child)
@@ -110,7 +119,7 @@ async def get_skill_info(skill_id: str | int) -> dict | None:
     sid = str(skill_id).strip()
     if not sid or "/" in sid or "\\" in sid or sid in {".", ".."}:
         return None
-    path = SKILL_ROOT / sid
+    path = get_skill_root() / sid
     row = _read_skill(path)
     if not row:
         return None

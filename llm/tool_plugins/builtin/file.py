@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from llm.tool_plugins.base import ToolContext, ToolPlugin
+from plugins.base import ToolContext, ToolSpec as ToolPlugin
 from integrations.web_search import READ_FILE_TOOL_DEFINITION
 
 MAX_FILE_SIZE = 10 * 1024

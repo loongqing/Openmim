@@ -13,14 +13,20 @@ markdown/assets.
 from __future__ import annotations
 
 import io
+import os
 import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 
 import yaml
 
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
+MAX_ZIP_ENTRIES = 256
+MAX_ZIP_FILE_BYTES = 5 * 1024 * 1024
+MAX_ZIP_TOTAL_BYTES = 20 * 1024 * 1024
+MAX_ZIP_COMPRESSION_RATIO = 200
 
 
 def parse_skill_frontmatter(text: str) -> dict:
@@ -47,17 +53,57 @@ def validate_skill_name(name: str) -> str:
     return name
 
 
-def validate_zip_entries(zip_path: Path) -> None:
-    """Reject path traversal / absolute paths / symlinks inside a zip."""
-    with zipfile.ZipFile(zip_path, "r") as zipf:
-        for info in zipf.infolist():
+def validate_zip_entries(zip_source: Path | io.BytesIO) -> None:
+    """Reject unsafe paths, links and zip bombs before extracting an archive."""
+    with zipfile.ZipFile(zip_source, "r") as zipf:
+        entries = zipf.infolist()
+        if len(entries) > MAX_ZIP_ENTRIES:
+            raise ValueError(f"zip has too many entries (>{MAX_ZIP_ENTRIES})")
+        total_size = 0
+        for info in entries:
             name = info.filename
-            if name.startswith("/") or ".." in Path(name).parts:
+            normalized = name.replace("\\", "/")
+            if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized) or ".." in Path(normalized).parts:
                 raise ValueError(f"unsafe zip entry: {name}")
             # Symlink attribute (Unix mode bits in external_attr high bits).
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
                 raise ValueError(f"symlinks are not allowed in skill zip: {name}")
+            if info.is_dir():
+                continue
+            if info.file_size > MAX_ZIP_FILE_BYTES:
+                raise ValueError(f"zip entry too large: {name}")
+            total_size += info.file_size
+            if total_size > MAX_ZIP_TOTAL_BYTES:
+                raise ValueError(f"zip expands beyond {MAX_ZIP_TOTAL_BYTES} bytes")
+            if info.file_size and (
+                info.compress_size == 0
+                or info.file_size / info.compress_size > MAX_ZIP_COMPRESSION_RATIO
+            ):
+                raise ValueError(f"suspicious compression ratio: {name}")
+
+
+def _replace_directory(staging_dir: Path, target_dir: Path, *, overwrite: bool) -> None:
+    """Promote a complete staging directory, restoring the old version on failure."""
+    if target_dir.exists() and not overwrite:
+        raise ValueError(f"skill '{target_dir.name}' already exists; pass overwrite=true")
+
+    backup_dir = target_dir.parent / f".{target_dir.name}.backup"
+    if backup_dir.exists():
+        raise RuntimeError(f"stale skill backup exists: {backup_dir}")
+    moved_old = False
+    try:
+        if target_dir.exists():
+            os.replace(target_dir, backup_dir)
+            moved_old = True
+        os.replace(staging_dir, target_dir)
+    except Exception:
+        if moved_old and not target_dir.exists() and backup_dir.exists():
+            os.replace(backup_dir, target_dir)
+        raise
+    else:
+        if moved_old:
+            shutil.rmtree(backup_dir)
 
 
 def install_skill_md(content: bytes, *, skill_root: Path, overwrite: bool = False) -> dict:
@@ -82,25 +128,23 @@ def install_skill_md(content: bytes, *, skill_root: Path, overwrite: bool = Fals
 
 def install_skill_zip(content: bytes, *, skill_root: Path, overwrite: bool = False) -> dict:
     """Install a ``.zip`` skill package. Validates entries then extracts."""
-    bio = io.BytesIO(content)
-    # Validate first.
-    tmp_zip = skill_root / ".upload_preview.zip"
     skill_root.mkdir(parents=True, exist_ok=True)
-    tmp_zip.write_bytes(content)
+    bio = io.BytesIO(content)
+    validate_zip_entries(bio)
+    bio.seek(0)
+    staging_parent = Path(tempfile.mkdtemp(prefix=".skill-upload-", dir=skill_root))
     try:
-        validate_zip_entries(tmp_zip)
-        with zipfile.ZipFile(tmp_zip, "r") as zipf:
+        with zipfile.ZipFile(bio, "r") as zipf:
             names = zipf.namelist()
             skill_md_entries = [n for n in names if n.endswith("SKILL.md")]
-            if not skill_md_entries:
-                raise ValueError("zip must contain a SKILL.md")
+            if len(skill_md_entries) != 1:
+                raise ValueError("zip must contain exactly one SKILL.md")
             # Determine skill name from frontmatter.
-            primary = next(
-                (n for n in skill_md_entries if n == "SKILL.md" or n.endswith("/SKILL.md")),
-                skill_md_entries[0],
-            )
-            with zipfile.ZipFile(bio, "r") as zf:
-                md_text = zf.read(primary).decode("utf-8")
+            primary = skill_md_entries[0]
+            try:
+                md_text = zipf.read(primary).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("SKILL.md must be UTF-8") from exc
             fm = parse_skill_frontmatter(md_text)
             if "name" not in fm or "description" not in fm:
                 raise ValueError("SKILL.md frontmatter must have name and description")
@@ -109,32 +153,33 @@ def install_skill_zip(content: bytes, *, skill_root: Path, overwrite: bool = Fal
             target_dir = skill_root / name
             if target_dir.exists() and not overwrite:
                 raise ValueError(f"skill '{name}' already exists; pass overwrite=true")
-            # Detect common root dir in zip so we can strip it.
-            common_root = ""
-            if len(names) > 1 and all(n.startswith(names[0].split("/")[0] + "/") for n in names if n != names[0].split("/")[0]):
-                common_root = names[0].split("/")[0] + "/"
+            primary_parts = Path(primary.replace("\\", "/")).parts
+            common_root = primary_parts[0] + "/" if len(primary_parts) > 1 else ""
+            relevant = [n for n in names if not n.endswith("/")]
+            if common_root and any(not n.replace("\\", "/").startswith(common_root) for n in relevant):
+                raise ValueError("zip must contain one skill folder or a root SKILL.md")
 
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(bio, "r") as zf:
-                for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-                    rel = info.filename
-                    if common_root and rel.startswith(common_root):
-                        rel = rel[len(common_root):]
-                    if not rel:
-                        continue
-                    dest = (target_dir / rel).resolve()
-                    if target_dir.resolve() not in dest.parents and dest != target_dir.resolve():
-                        raise ValueError(f"escape attempt: {info.filename}")
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as src, open(dest, "wb") as out:
-                        out.write(src.read())
+            staging_dir = staging_parent / name
+            staging_dir.mkdir()
+            staging_resolved = staging_dir.resolve()
+            for info in zipf.infolist():
+                if info.is_dir():
+                    continue
+                rel = info.filename.replace("\\", "/")
+                if common_root:
+                    rel = rel[len(common_root):]
+                if not rel:
+                    continue
+                dest = (staging_dir / rel).resolve()
+                if staging_resolved not in dest.parents:
+                    raise ValueError(f"escape attempt: {info.filename}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with zipf.open(info) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+            if not (staging_dir / "SKILL.md").is_file():
+                raise ValueError("SKILL.md must be at the skill package root")
+            _replace_directory(staging_dir, target_dir, overwrite=overwrite)
         return {"ok": True, "name": name, "path": str(target_dir), "kind": "zip"}
     finally:
-        try:
-            tmp_zip.unlink()
-        except Exception:
-            pass
+        shutil.rmtree(staging_parent, ignore_errors=True)

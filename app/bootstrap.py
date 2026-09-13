@@ -17,6 +17,7 @@ from app_config.config import (
     STICKER_SETS,
 )
 from stores.context_manager import ContextManager
+from stores.group_settings_store import get_group_disabled_tools
 from features.sticker_manager import StickerManager
 from stores.playables_db import init_db as init_playables_db
 from stores.persona_memory import init_db as init_persona_memory_db
@@ -37,18 +38,16 @@ from handlers.raw_update_router import get_handlers as get_raw_update_router_han
 from app.build_info import load_build_info
 
 from app.container import AppContext
-from app.runtime_config import RuntimeConfig
-from app_config.settings import load_settings
+from app.runtime_config import get_shared_runtime_config
 from plugins.manager import load_plugins, set_plugin_manager
-from handlers.chat import init_handler as init_chat_handler, get_handler as get_chat_handler
-from handlers.admin import init_admin, get_handlers as get_admin_handlers
-from handlers.business import get_handlers as get_business_handlers
+from handlers.chat_handler import init_handler as init_chat_handler, get_handler as get_chat_handler
+from handlers.admin_handler import init_admin, get_handlers as get_admin_handlers
+from handlers.business_handler import get_handlers as get_business_handlers
 from handlers.private_text_router import get_handlers as get_private_text_router_handlers
 
 
 def build_runtime_context() -> AppContext:
-    settings = load_settings()
-    runtime_config = RuntimeConfig(settings)
+    runtime_config = get_shared_runtime_config()
 
     init_playables_db()
     init_persona_memory_db()
@@ -56,7 +55,14 @@ def build_runtime_context() -> AppContext:
 
     whitelist = load_whitelist()
     build_info = load_build_info()
-    plugin_manager = load_plugins(disabled_plugins=getattr(__import__('app_config.config', fromlist=['PLUGINS_DISABLED']), 'PLUGINS_DISABLED', set()))
+    plugin_manager = load_plugins(
+        disabled_plugins=getattr(
+            __import__("app_config.config", fromlist=["PLUGINS_DISABLED"]),
+            "PLUGINS_DISABLED",
+            set(),
+        ),
+        get_chat_disabled_tools=get_group_disabled_tools,
+    )
     set_plugin_manager(plugin_manager)
 
     context_mgr = ContextManager()
@@ -74,7 +80,6 @@ def build_runtime_context() -> AppContext:
     inject_whitelist_to_group_admin(whitelist)
 
     return AppContext(
-        settings=settings,
         runtime_config=runtime_config,
         context_mgr=context_mgr,
         sticker_mgr=sticker_mgr,
@@ -84,16 +89,18 @@ def build_runtime_context() -> AppContext:
     )
 
 
-def build_application(post_init_callback) -> tuple[Application, AppContext]:
+def build_application(post_init_callback, post_shutdown_callback=None) -> tuple[Application, AppContext]:
     ctx = build_runtime_context()
 
-    application = (
+    builder = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init_callback)
         .concurrent_updates(max(1, TELEGRAM_CONCURRENT_UPDATES))
-        .build()
     )
+    if post_shutdown_callback is not None:
+        builder = builder.post_shutdown(post_shutdown_callback)
+    application = builder.build()
 
     ctx.application = application
     application.bot_data["context_mgr"] = ctx.context_mgr
@@ -135,7 +142,7 @@ def register_handlers(application: Application) -> None:
     for h in get_topic_handlers():
         application.add_handler(h, group=0)
     # /fortune 仍是 core 可玩性命令；历史猜图已迁入 history_guess 插件。
-    from features.playables import get_handlers as get_fortune_handlers
+    from features.fortune import get_handlers as get_fortune_handlers
     for h in get_fortune_handlers():
         application.add_handler(h, group=0)
     # business handlers 内含 TypeHandler(Update)，匹配一切 update。

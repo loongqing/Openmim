@@ -20,13 +20,25 @@ from app_config.config import (
     FOCUS_LIGHT_HINT_PROBABILITY,
     FOCUS_LIGHT_HINT_COOLDOWN_SECONDS,
     FOCUS_JOIN_MAX_PER_SESSION,
+    TRIGGER_PROBABILITY,
 )
-from features.auto_policies import get_trigger_probability
 from stores.focus_store import get_focus_store
 from stores.group_activity_store import get_activity_store
 from stores.group_settings_store import set_group_reply_preference
 
 logger = logging.getLogger(__name__)
+
+# ── 触发概率策略（原 features/auto_policies.py 内联） ──
+# 这是内联自原 features/auto_policies.py 的固定值 0.01，行为与原实现等价。
+# 内联后失去了"可被外部改写"的语义，因此此值为固定常量。
+# 如需调整随机触发概率，直接修改下方 TRIGGER_PROBABILITY_OVERRIDE 的值即可。
+TRIGGER_PROBABILITY_OVERRIDE: float | None = 0.01
+
+
+def get_trigger_probability() -> float:
+    if TRIGGER_PROBABILITY_OVERRIDE is not None:
+        return float(TRIGGER_PROBABILITY_OVERRIDE)
+    return float(TRIGGER_PROBABILITY)
 
 # 全局引用（由 main.py 注入）
 _whitelist: Set[str] = set()
@@ -213,26 +225,6 @@ async def on_bot_added_to_group(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except TelegramError as e:
         logger.warning(f"发送白名单提示失败 chat={cid}: {e}")
-
-
-# ----------------------------------------------------------------
-# /whitelist_list — 查看白名单
-# ----------------------------------------------------------------
-async def whitelist_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """查看白名单列表"""
-    if not _check_admin(update):
-        await update.message.reply_text("❌ 只有管理员才能使用此命令。")
-        return
-
-    if not _whitelist:
-        await update.message.reply_text("📭 白名单为空。")
-        return
-
-    lines = [f"📋 **白名单** (共 {len(_whitelist)} 个群组):", ""]
-    for i, cid in enumerate(sorted(_whitelist), 1):
-        lines.append(f"  {i}. `{cid}`")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 def _fmt_age(ts: str | None) -> str:

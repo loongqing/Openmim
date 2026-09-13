@@ -7,7 +7,8 @@ from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 
 from app_config.customization import get_text
-from stores.playables_db import DB_PATH, MutedUserRow, _now, orm_session
+from stores.playables_db import DB_PATH, MutedUserRow, orm_session
+from stores.timestamps import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ async def cmd_muteme(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with orm_session(DB_PATH) as session:
         if session.get(MutedUserRow, (chat_id, user_id)) is None:
-            session.add(MutedUserRow(chat_id=chat_id, user_id=user_id, muted_at=_now()))
+            session.add(MutedUserRow(chat_id=chat_id, user_id=user_id, muted_at=utc_now_iso()))
 
     logger.info(f"🔇 用户静音: chat={chat_id} user={user_id}")
     await update.message.reply_text(get_text("commands.mute.muted", "🔇 好哦，咱先不回你啦喵。想把咱叫回来就发 /unmuteme。"))

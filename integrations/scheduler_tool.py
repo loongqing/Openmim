@@ -10,6 +10,7 @@ LLM 计划任务工具
 - cron:  按 cron 表达式循环触发
 """
 import asyncio
+import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -21,10 +22,7 @@ logger = logging.getLogger(__name__)
 _CST = timezone(timedelta(hours=8), name="CST")
 MAX_ACTIVE_TASKS = 20
 
-# 全局状态：活跃任务
-_active_tasks: dict[int, dict] = {}  # task_id -> {future, message, chat_id, ...}
 _next_id = 1
-_loop_handle: asyncio.Task | None = None
 
 
 @dataclass
@@ -39,6 +37,25 @@ class ScheduledTask:
 
 
 _tasks: dict[int, ScheduledTask] = {}
+
+
+def _consume_task_result(handle: asyncio.Task) -> None:
+    """Retrieve failures from detached scheduler tasks."""
+    if handle.cancelled():
+        return
+    try:
+        handle.result()
+    except Exception:
+        logger.exception("Scheduled task loop exited unexpectedly")
+
+
+async def _cancel_scheduled_task(task: ScheduledTask) -> None:
+    handle = task.handle
+    if handle is None or handle.done() or handle is asyncio.current_task():
+        return
+    handle.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await handle
 
 
 def _parse_cron(expr: str) -> dict | None:
@@ -148,11 +165,13 @@ async def schedule_task(
     if action == "cancel":
         if task_id is None:
             return "[错误：缺少 task_id]"
-        t = _tasks.pop(task_id, None)
+        t = _tasks.get(task_id)
         if t is None:
             return f"[错误：任务 #{task_id} 不存在]"
-        if t.handle and not t.handle.done():
-            t.handle.cancel()
+        if t.chat_id != chat_id:
+            return f"[error: task #{task_id} not found]"
+        _tasks.pop(task_id, None)
+        await _cancel_scheduled_task(t)
         return f"[已取消任务 #{task_id}]"
 
     if action == "cancel_all":
@@ -160,8 +179,7 @@ async def schedule_task(
         to_remove = [tid for tid, t in _tasks.items() if t.chat_id == chat_id]
         for tid in to_remove:
             t = _tasks.pop(tid)
-            if t.handle and not t.handle.done():
-                t.handle.cancel()
+            await _cancel_scheduled_task(t)
             removed += 1
         return f"[已取消 {removed} 个任务]"
 
@@ -222,12 +240,12 @@ async def schedule_task(
     )
 
     # 如果是 cron，需要在触发后重新调度下一次
-    if trigger_type == "cron":
-        task.handle = asyncio.create_task(_cron_loop(tid))
-    else:
-        task.handle = asyncio.create_task(_single_fire(tid))
-
     _tasks[tid] = task
+    if trigger_type == "cron":
+        task.handle = asyncio.create_task(_cron_loop(tid), name=f"scheduler-cron-{tid}")
+    else:
+        task.handle = asyncio.create_task(_single_fire(tid), name=f"scheduler-once-{tid}")
+    task.handle.add_done_callback(_consume_task_result)
     fire_str = next_fire.strftime("%Y-%m-%d %H:%M CST")
     logger.info(f"⏰ 创建定时任务 #{tid} | chat={chat_id} | type={trigger_type} | fire={fire_str} | msg={message[:60]}")
     return f"[已创建任务 #{tid}，{'下次触发' if trigger_type == 'cron' else '触发时间'}: {fire_str}]"
@@ -235,42 +253,48 @@ async def schedule_task(
 
 async def _single_fire(task_id: int):
     """一次性任务：等到触发时间，执行回调。"""
-    t = _tasks.get(task_id)
-    if t is None:
-        return
-    now = datetime.now(_CST)
-    delay = (t.next_fire - now).total_seconds()
-    if delay > 0:
-        await asyncio.sleep(delay)
-    t2 = _tasks.pop(task_id, None)
-    if t2 is None:
-        return
-    await _fire_task(t2)
+    current_handle = asyncio.current_task()
+    try:
+        task = _tasks.get(task_id)
+        if task is None:
+            return
+        delay = (task.next_fire - datetime.now(_CST)).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if _tasks.get(task_id) is not task:
+            return
+        await _fire_task(task)
+    finally:
+        current = _tasks.get(task_id)
+        if current is not None and current.handle is current_handle:
+            _tasks.pop(task_id, None)
 
 
 async def _cron_loop(task_id: int):
     """cron 任务：循环触发。"""
-    while True:
-        t = _tasks.get(task_id)
-        if t is None:
-            return
-        now = datetime.now(_CST)
-        delay = (t.next_fire - now).total_seconds()
-        if delay > 0:
-            await asyncio.sleep(delay)
-        t2 = _tasks.get(task_id)
-        if t2 is None:
-            return
-        await _fire_task(t2)
-        # 计算下一次
-        parsed = _parse_cron(t2.cron_expr)
-        if parsed is None:
-            break
-        now2 = datetime.now(_CST)
-        nxt = _next_cron_fire(parsed, now2)
-        if nxt is None:
-            break
-        t2.next_fire = nxt
+    current_handle = asyncio.current_task()
+    try:
+        while True:
+            task = _tasks.get(task_id)
+            if task is None:
+                return
+            delay = (task.next_fire - datetime.now(_CST)).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if _tasks.get(task_id) is not task:
+                return
+            await _fire_task(task)
+            parsed = _parse_cron(task.cron_expr)
+            if parsed is None:
+                return
+            next_fire = _next_cron_fire(parsed, datetime.now(_CST))
+            if next_fire is None:
+                return
+            task.next_fire = next_fire
+    finally:
+        current = _tasks.get(task_id)
+        if current is not None and current.handle is current_handle:
+            _tasks.pop(task_id, None)
 
 
 async def _fire_task(task: ScheduledTask):
@@ -381,12 +405,12 @@ def _get_application():
     return _application
 
 
-def cancel_all_tasks():
+async def cancel_all_tasks():
     """取消所有定时任务（进程关闭时调用）。"""
-    for tid, t in list(_tasks.items()):
-        if t.handle and not t.handle.done():
-            t.handle.cancel()
+    tasks = list(_tasks.values())
     _tasks.clear()
+    for task in tasks:
+        await _cancel_scheduled_task(task)
     logger.info("⏰ 已取消所有定时任务")
 
 

@@ -59,6 +59,7 @@ def _cfg_get_list(name: str, default: list[str] | None = None) -> list[str]:
 
 
 # --- LLM 配置 ---
+LLM_PROVIDER = str(_cfg_get("LLM_PROVIDER", "openai_compatible")).strip().lower()
 LLM_API_BASE = str(_cfg_get("LLM_API_BASE", "https://api.openai.com/v1"))
 LLM_API_KEY = str(_cfg_get("LLM_API_KEY", ""))
 LLM_MODEL = str(_cfg_get("LLM_MODEL", "gpt-4o-mini"))
@@ -280,6 +281,8 @@ def validate_config():
         errors.append("BOT_TOKEN 未设置或仍为占位值（请在 project_config.json 或环境变量中提供）")
     if _is_missing_secret(LLM_API_KEY):
         errors.append("LLM_API_KEY 未设置或仍为占位值（请在 project_config.json 或环境变量中提供）")
+    if LLM_PROVIDER not in {"openai_compatible", "openai_responses", "anthropic"}:
+        errors.append("LLM_PROVIDER 必须是 openai_compatible、openai_responses 或 anthropic")
     if not TAVILY_API_KEY:
         logger.warning("TAVILY_API_KEY 未设置，搜索功能将不可用")
     return errors
@@ -287,7 +290,8 @@ def validate_config():
 
 def log_config():
     logger.info(
-        "配置: model=%s admins=%s business=%s guest=%s stickers=%s",
+        "配置: provider=%s model=%s admins=%s business=%s guest=%s stickers=%s",
+        LLM_PROVIDER,
         LLM_MODEL,
         sorted(ADMIN_IDS),
         "on" if BUSINESS_ENABLED else "off",
@@ -295,6 +299,7 @@ def log_config():
         len(STICKER_SETS),
     )
     logger.info("📋 当前配置:")
+    logger.info(f"  LLM Provider: {LLM_PROVIDER}")
     logger.info(f"  LLM Base:  {LLM_API_BASE}")
     logger.info(f"  LLM Model: {LLM_MODEL}")
     logger.info(f"  LLM Key:   {LLM_API_KEY[:12]}...{LLM_API_KEY[-4:] if LLM_API_KEY else 'N/A'}")
